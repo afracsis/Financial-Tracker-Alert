@@ -1,0 +1,2333 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Financial Market Tracker</title>
+    <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+            background: #0f1117;
+            color: #e2e8f0;
+            min-height: 100vh;
+        }
+
+        /* ── 헤더 ─────────────────────────────────────────────── */
+        header {
+            background: linear-gradient(135deg, #1a1d2e 0%, #16213e 100%);
+            border-bottom: 1px solid #2d3748;
+            padding: 20px 32px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        header h1 { font-size: 22px; font-weight: 700; color: #e2e8f0; letter-spacing: -0.5px; }
+        header .subtitle { font-size: 13px; color: #718096; margin-top: 3px; }
+
+        .header-right {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 6px;
+        }
+
+        .badge {
+            background: #1a202c;
+            border: 1px solid #2d3748;
+            border-radius: 20px;
+            padding: 6px 14px;
+            font-size: 12px;
+            color: #a0aec0;
+            display: flex;
+            align-items: center;
+        }
+
+        .badge .dot {
+            display: inline-block;
+            width: 7px; height: 7px;
+            border-radius: 50%;
+            background: #48bb78;
+            margin-right: 6px;
+            flex-shrink: 0;
+            animation: pulse 2s infinite;
+        }
+
+        .obs-date-badge {
+            background: #16213e;
+            border: 1px solid #3182ce;
+            border-radius: 20px;
+            padding: 5px 14px;
+            font-size: 12px;
+            color: #90cdf4;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .obs-date-badge .obs-label { color: #4a7fa5; font-size: 11px; }
+        .next-sched-badge { font-size: 11px; color: #4a5568; padding: 2px 0; text-align: right; }
+
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+        /* ── 탭 네비게이션 ──────────────────────────────────────── */
+        .tab-nav {
+            display: flex;
+            gap: 0;
+            border-bottom: 1px solid #2d3748;
+            background: #0f1117;
+            padding: 0 24px;
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .tab-btn {
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            color: #718096;
+            font-size: 14px;
+            font-weight: 500;
+            font-family: inherit;
+            padding: 16px 20px 13px;
+            cursor: pointer;
+            transition: all 0.2s;
+            letter-spacing: 0.2px;
+        }
+
+        .tab-btn:hover { color: #a0aec0; }
+
+        .tab-btn.active {
+            color: #e2e8f0;
+            border-bottom-color: #4299e1;
+        }
+
+        /* ── 메인 컨텐츠 ─────────────────────────────────────── */
+        main {
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 32px 24px;
+        }
+
+        .section-label {
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 1.5px;
+            color: #4a5568;
+            text-transform: uppercase;
+            margin-bottom: 14px;
+        }
+
+        /* ── 카드 공통 ─────────────────────────────────────────── */
+        .card {
+            background: #1a1d2e;
+            border: 1px solid #2d3748;
+            border-radius: 12px;
+            padding: 24px;
+            transition: border-color 0.2s;
+        }
+
+        .card:hover { border-color: #4a5568; }
+
+        .card-accent {
+            width: 36px; height: 4px;
+            border-radius: 2px;
+            margin-bottom: 16px;
+        }
+
+        .card-label { font-size: 12px; color: #718096; margin-bottom: 8px; font-weight: 500; }
+
+        .card-value {
+            font-size: 36px;
+            font-weight: 700;
+            color: #e2e8f0;
+            letter-spacing: -1.5px;
+            line-height: 1;
+        }
+
+        .card-value.loading { color: #4a5568; }
+
+        .card-change-badge {
+            display: inline-block;
+            margin-top: 10px;
+            font-size: 13px;
+            font-weight: 600;
+            padding: 3px 9px;
+            border-radius: 20px;
+        }
+
+        .card-change-badge.up      { background: rgba(246,173,85,0.12);  color: #f6ad55; }
+        .card-change-badge.down    { background: rgba(104,211,145,0.12); color: #68d391; }
+        .card-change-badge.neutral { background: rgba(113,128,150,0.12); color: #718096; }
+
+        .card-date { font-size: 12px; color: #4a5568; margin-top: 8px; }
+
+        /* ── Credit 탭 ─────────────────────────────────────────── */
+        .credit-cards {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+            margin-bottom: 36px;
+        }
+
+        @media (max-width: 600px) { .credit-cards { grid-template-columns: 1fr; } }
+
+        /* ── 알람 배너 ──────────────────────────────────────────── */
+        .alert-banner {
+            background: #2d1d1d;
+            border: 1px solid #c53030;
+            border-radius: 10px;
+            padding: 14px 20px;
+            margin-bottom: 32px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 14px;
+            color: #feb2b2;
+        }
+
+        .alert-banner.hidden { display: none; }
+        .alert-banner .icon { font-size: 20px; }
+
+        /* ── 차트 ──────────────────────────────────────────────── */
+        .chart-section {
+            background: #1a1d2e;
+            border: 1px solid #2d3748;
+            border-radius: 12px;
+            padding: 28px;
+            margin-bottom: 32px;
+        }
+
+        .chart-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 20px;
+        }
+
+        .chart-title { font-size: 15px; font-weight: 600; color: #e2e8f0; }
+        .chart-desc { font-size: 12px; color: #718096; margin-top: 3px; }
+
+        #chart { width: 100%; height: 360px; }
+
+        /* ── 갱신 버튼 ──────────────────────────────────────────── */
+        .refresh-btn {
+            background: #2d3748;
+            border: 1px solid #4a5568;
+            border-radius: 8px;
+            color: #e2e8f0;
+            font-size: 13px;
+            font-family: inherit;
+            padding: 8px 16px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .refresh-btn:hover { background: #4a5568; }
+
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ── 텔레그램 안내 ──────────────────────────────────────── */
+        .telegram-info {
+            background: #1a1d2e;
+            border: 1px solid #2d3748;
+            border-radius: 12px;
+            padding: 24px 28px;
+        }
+
+        .telegram-info h3 { font-size: 15px; font-weight: 600; color: #e2e8f0; margin-bottom: 12px; }
+        .telegram-info p  { font-size: 13px; color: #718096; line-height: 1.7; margin-bottom: 8px; }
+
+        .telegram-info code {
+            background: #0f1117;
+            border: 1px solid #2d3748;
+            border-radius: 4px;
+            padding: 2px 7px;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            color: #81e6d9;
+        }
+
+        .status-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; font-size: 12px; color: #718096; }
+        .status-dot { width: 8px; height: 8px; border-radius: 50%; background: #f6ad55; }
+        .status-dot.active { background: #48bb78; }
+
+        /* ── NY Fed 카드 공통 ──────────────────────────────────── */
+        .nyfed-card {
+            background: #161926;
+            border: 1px solid #2d3748;
+            border-radius: 10px;
+            padding: 18px 20px;
+            transition: border-color 0.2s;
+        }
+
+        .nyfed-card:hover { border-color: #4a5568; }
+
+        .nyfed-card-accent {
+            width: 28px; height: 3px;
+            border-radius: 2px;
+            margin-bottom: 12px;
+        }
+
+        .nyfed-label { font-size: 11px; color: #718096; margin-bottom: 6px; font-weight: 500; letter-spacing: 0.3px; }
+
+        .nyfed-value {
+            font-size: 28px;
+            font-weight: 700;
+            color: #e2e8f0;
+            letter-spacing: -1px;
+            line-height: 1;
+        }
+
+        .nyfed-value.loading { color: #4a5568; }
+
+        .nyfed-unit { font-size: 14px; font-weight: 400; color: #718096; margin-left: 2px; }
+
+        .nyfed-sub { font-size: 12px; color: #4a5568; margin-top: 8px; }
+        .nyfed-sub .nyfed-vol { color: #5c7a9a; }
+
+        .nyfed-spread-pos  { color: #f6ad55; }
+        .nyfed-spread-neg  { color: #68d391; }
+        .nyfed-spread-zero { color: #718096; }
+
+        .nyfed-source {
+            font-size: 10px;
+            color: #2d3748;
+            margin-top: 16px;
+            text-align: right;
+        }
+
+        /* ── Fed Rate 탭 ───────────────────────────────────────── */
+        .fedrate-cards {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 16px;
+            margin-bottom: 16px;
+        }
+
+        @media (max-width: 700px) { .fedrate-cards { grid-template-columns: 1fr; } }
+
+        /* spread 강조: 0.05%p 이상 */
+        .spread-alert { color: #fc8181 !important; }
+
+        #fedrate-chart { width: 100%; height: 380px; }
+
+        /* ── Fed Operation 탭 ───────────────────────────────────── */
+        .fedop-cards {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 16px;
+            margin-bottom: 20px;
+        }
+        @media (max-width: 900px) { .fedop-cards { grid-template-columns: 1fr 1fr; } }
+        @media (max-width: 540px) { .fedop-cards { grid-template-columns: 1fr; } }
+
+        .fedop-card-badge {
+            display: inline-block;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 2px 8px;
+            border-radius: 8px;
+            margin-bottom: 6px;
+            letter-spacing: 0.03em;
+        }
+        .fedop-badge-up   { background: #22543d; color: #68d391; }
+        .fedop-badge-down { background: #742a2a; color: #fc8181; }
+        .fedop-badge-sale { background: #744210; color: #f6ad55; }
+        .fedop-ratio {
+            margin-top: 6px;
+            font-size: 11.5px;
+            color: #a0aec0;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        .fedop-ratio-badge {
+            display: inline-block;
+            padding: 1px 7px;
+            border-radius: 10px;
+            font-size: 11.5px;
+            font-weight: 600;
+            background: rgba(99,179,237,0.15);
+            color: #90cdf4;
+        }
+
+        .fedop-change-up   { color: #68d391; }
+        .fedop-change-down { color: #fc8181; }
+
+        .fedop-chart-wrap {
+            background: #1a1d2e;
+            border: 1px solid #2d3748;
+            border-radius: 14px;
+            padding: 20px 20px 10px;
+            margin-bottom: 18px;
+        }
+        .fedop-chart-title {
+            font-size: 15px;
+            font-weight: 600;
+            color: #e2e8f0;
+            margin-bottom: 2px;
+        }
+        .fedop-chart-sub {
+            font-size: 12px;
+            color: #718096;
+            margin-bottom: 14px;
+        }
+        .fedop-charts-row {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 18px;
+        }
+        @media (max-width: 860px) { .fedop-charts-row { grid-template-columns: 1fr; } }
+
+        /* ── Data History 탭 — 아코디언 ────────────────────────── */
+        .history-section {
+            background: #1a1d2e;
+            border: 1px solid #2d3748;
+            border-radius: 12px;
+            margin-bottom: 16px;
+            overflow: hidden;
+            transition: border-color 0.2s;
+        }
+
+        .history-section:hover { border-color: #4a5568; }
+
+        .history-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px 24px;
+            cursor: pointer;
+            user-select: none;
+        }
+
+        .history-header-left { display: flex; align-items: center; gap: 14px; }
+
+        .history-title { font-size: 15px; font-weight: 600; color: #e2e8f0; }
+        .history-desc  { font-size: 12px; color: #718096; margin-top: 3px; }
+
+        .history-header-right { display: flex; align-items: center; gap: 12px; }
+
+        .history-count {
+            font-size: 12px;
+            color: #718096;
+            background: #0f1117;
+            border: 1px solid #2d3748;
+            border-radius: 6px;
+            padding: 4px 10px;
+            white-space: nowrap;
+        }
+
+        .history-arrow {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 28px; height: 28px;
+            border-radius: 6px;
+            background: #0f1117;
+            border: 1px solid #2d3748;
+            color: #718096;
+            font-size: 13px;
+            transition: all 0.25s;
+            flex-shrink: 0;
+        }
+
+        .history-section.open .history-arrow {
+            transform: rotate(180deg);
+            background: #2d3748;
+            color: #e2e8f0;
+        }
+
+        .history-body {
+            display: none;
+            border-top: 1px solid #2d3748;
+            padding: 0 24px 24px;
+        }
+
+        .history-section.open .history-body { display: block; }
+
+        table { width: 100%; border-collapse: collapse; margin-top: 16px; }
+
+        thead th {
+            font-size: 11px;
+            font-weight: 600;
+            color: #4a5568;
+            text-transform: uppercase;
+            letter-spacing: 0.8px;
+            padding: 10px 14px;
+            text-align: left;
+            border-bottom: 1px solid #2d3748;
+        }
+
+        tbody tr { border-bottom: 1px solid #1e2330; transition: background 0.15s; }
+        tbody tr:hover { background: #161927; }
+        tbody tr:last-child { border-bottom: none; }
+
+        tbody td { padding: 12px 14px; font-size: 14px; color: #a0aec0; }
+        tbody td:first-child { color: #e2e8f0; }
+        tbody td.value { color: #90cdf4; font-weight: 600; font-family: 'Courier New', monospace; }
+
+        .change-up      { color: #f6ad55 !important; }
+        .change-down    { color: #68d391 !important; }
+        .change-neutral { color: #718096 !important; }
+
+        .history-loading { text-align: center; color: #4a5568; padding: 40px; }
+    </style>
+</head>
+<body>
+
+<header>
+    <div>
+        <h1>Financial Market Tracker</h1>
+        <div class="subtitle">Credit · Fed Rate · Fed Operation</div>
+    </div>
+    <div class="header-right">
+        <div class="obs-date-badge">
+            <span class="obs-label">데이터 기준일</span>
+            <span id="observation-date">—</span>
+        </div>
+        <div class="badge">
+            <span class="dot"></span>
+            <span id="last-fetched">갱신 확인 중...</span>
+        </div>
+        <div class="next-sched-badge" id="next-schedule">다음 갱신: —</div>
+        <!-- 사용자 정보 + 로그아웃 -->
+        <div style="display:flex; align-items:center; gap:10px; margin-top:4px;">
+            {% if current_user.is_authenticated and current_user.picture %}
+            <img src="{{ current_user.picture }}" alt="avatar"
+                 style="width:26px;height:26px;border-radius:50%;border:1px solid #2d3748;">
+            {% endif %}
+            <span style="font-size:12px;color:#718096;">
+                {{ current_user.name if current_user.is_authenticated else '' }}
+            </span>
+            <a href="/auth/logout"
+               style="font-size:11px;color:#4a5568;text-decoration:none;border:1px solid #2d3748;
+                      padding:3px 10px;border-radius:4px;transition:color 0.2s;"
+               onmouseover="this.style.color='#90cdf4'" onmouseout="this.style.color='#4a5568'">
+                로그아웃
+            </a>
+        </div>
+    </div>
+</header>
+
+<!-- 탭 네비게이션 -->
+<div class="tab-nav">
+    <button class="tab-btn active" id="tab-btn-portfolio" onclick="switchTab('portfolio')">Portfolio</button>
+    <button class="tab-btn"        id="tab-btn-fedrate"   onclick="switchTab('fedrate')">Fed Rate</button>
+    <button class="tab-btn"        id="tab-btn-jpy"       onclick="switchTab('jpy')">JPY Swap</button>
+    <button class="tab-btn"        id="tab-btn-credit"    onclick="switchTab('credit')">Credit</button>
+    <button class="tab-btn"        id="tab-btn-fedop"     onclick="switchTab('fedop')">Fed Operation</button>
+    <button class="tab-btn"        id="tab-btn-volatility" onclick="switchTab('volatility');loadVolatility();">Volatility</button>
+    <button class="tab-btn"        id="tab-btn-history"   onclick="switchTab('history')">Data History</button>
+    {% if current_user.is_authenticated and current_user.is_admin() %}
+    <button class="tab-btn" id="tab-btn-admin" onclick="switchTab('admin');loadAdminUsers();"
+            style="margin-left:auto;color:#f6ad55;border-color:rgba(246,173,85,0.3);">⚙ Admin</button>
+    {% endif %}
+</div>
+
+<!-- ── Portfolio 탭 (종합 시장 상황판) ──────────────────────────── -->
+<div id="pane-portfolio">
+<main>
+
+<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; flex-wrap:wrap; gap:10px;">
+    <div>
+        <div class="section-label" style="margin-bottom:4px;">종합 시장 상황판</div>
+        <div style="font-size:12px; color:#2d3748;">
+            실시간 시장 데이터 · yfinance · FRED · Investing.com · 1분 캐시 적용
+        </div>
+    </div>
+    <div style="display:flex; align-items:center; gap:12px;">
+        <div id="ptf-status-dot" style="width:8px;height:8px;border-radius:50%;background:#68d391;display:inline-block;"></div>
+        <span id="ptf-updated" style="font-size:12px;color:#4a5568;">—</span>
+        <button onclick="loadPortfolio(true)" style="
+            background: rgba(99,179,237,0.15); border: 1px solid rgba(99,179,237,0.4);
+            color:#90cdf4; padding:5px 14px; border-radius:6px; font-size:12px; cursor:pointer;">
+            새로고침
+        </button>
+    </div>
+</div>
+
+<!-- 색상 범례 -->
+<div style="display:flex; gap:16px; margin-bottom:12px; font-size:11px; color:#4a5568;">
+    <span><span style="color:#fc8181;">▲</span> 상승 (빨강)</span>
+    <span><span style="color:#63b3ed;">▼</span> 하락 (파랑)</span>
+    <span><span style="color:#f6ad55;">◆</span> 대변동 (&gt;2%)</span>
+</div>
+
+<div id="ptf-loading" style="text-align:center; padding:40px; color:#4a5568;">
+    <div style="font-size:24px; margin-bottom:8px;">⏳</div>
+    <div>시장 데이터를 불러오는 중... (최초 1회 약 5~10초 소요)</div>
+</div>
+
+<div id="ptf-table-wrap" style="display:none;">
+    <table class="ptf-table" id="ptf-table">
+        <thead>
+            <tr>
+                <th style="width:38px;"></th>
+                <th>지표명</th>
+                <th style="text-align:right;">현재가</th>
+                <th style="text-align:right;">전일비</th>
+                <th id="ptf-sort-th" onclick="togglePtfSort()" style="text-align:right; cursor:pointer; user-select:none; white-space:nowrap;">
+                    등락률 <span id="ptf-sort-icon" style="font-size:10px; margin-left:3px; color:#4a6fa5;">⇅</span>
+                </th>
+                <th style="text-align:right; min-width:110px;">업데이트</th>
+            </tr>
+        </thead>
+        <tbody id="ptf-tbody"></tbody>
+    </table>
+</div>
+
+</main>
+</div>
+
+<style>
+.ptf-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13.5px;
+}
+.ptf-table thead tr {
+    background: #1a2a42;
+}
+.ptf-table th {
+    padding: 10px 14px;
+    color: #5c7a9a;
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    border-bottom: 2px solid #1e3a5f;
+    white-space: nowrap;
+}
+.ptf-table tbody tr {
+    border-bottom: 1px solid #141e2e;
+    transition: background 0.12s;
+}
+.ptf-table tbody tr:hover { filter: brightness(1.12); }
+.ptf-table td {
+    padding: 10px 14px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+.ptf-cat-header td {
+    padding: 7px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: #4a6fa5;
+    background: #0e1824;
+    border-bottom: none !important;
+    border-top: 1px solid #1a2a42;
+    text-transform: uppercase;
+}
+.ptf-row-up   { background: rgba(252,129,129,0.07); }
+.ptf-row-down { background: rgba(99,179,237,0.07);  }
+.ptf-row-big-up   { background: rgba(252,129,129,0.16); }
+.ptf-row-big-down { background: rgba(99,179,237,0.16);  }
+.ptf-last     { font-weight: 700; font-size: 14px; color: #e2e8f0; }
+.ptf-chg-up   { color: #fc8181; font-weight: 600; }
+.ptf-chg-down { color: #63b3ed; font-weight: 600; }
+.ptf-chg-zero { color: #a0aec0; }
+.ptf-pct-up   { color: #fc8181; font-weight: 700; font-size: 14px; }
+.ptf-pct-down { color: #63b3ed; font-weight: 700; font-size: 14px; }
+.ptf-pct-zero { color: #a0aec0; }
+.ptf-big-up   { color: #ff6b6b; font-weight: 800; }
+.ptf-big-down { color: #4eb5ff; font-weight: 800; }
+.ptf-name     { color: #e2e8f0; font-weight: 500; }
+.ptf-unit     { color: #4a5568; font-size: 11px; margin-left: 4px; }
+.ptf-na       { color: #2d3748; font-style: italic; }
+.ptf-sym      { color: #2d3748; font-size: 11px; }
+.ptf-ts       { color: #2d3748; font-size: 11px; }
+
+/* 정렬 가능 컬럼 헤더 */
+#ptf-sort-th:hover {
+    color: #90cdf4 !important;
+    background: rgba(99,179,237,0.08);
+}
+#ptf-sort-th.sort-active {
+    color: #90cdf4;
+    background: rgba(99,179,237,0.1);
+}
+.ptf-sort-rank {
+    display: inline-block;
+    width: 20px;
+    text-align: center;
+    color: #2d3748;
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+</style>
+
+<!-- ── Credit 탭 ──────────────────────────────────────────────── -->
+<div id="pane-credit" style="display:none;">
+<main>
+
+    <div class="alert-banner hidden" id="alert-banner">
+        <span class="icon">⚠️</span>
+        <span id="alert-text"></span>
+    </div>
+
+    <div class="section-label">신용 스프레드 지표</div>
+    <div class="credit-cards">
+        <!-- HY OA Index -->
+        <div class="card">
+            <div class="card-accent" style="background:#4299e1;"></div>
+            <div class="card-label">HY OA Index (BAMLH0A0HYM2)</div>
+            <div class="card-value loading" id="card-current">—</div>
+            <div id="card-change-badge"></div>
+            <div class="card-date" id="card-date">기준일 로딩 중...</div>
+        </div>
+        <!-- A2/P2 CP 금리 -->
+        <div class="card">
+            <div class="card-accent" style="background:#f6ad55;"></div>
+            <div class="card-label">A2/P2 비금융 CP 금리 30일 (RIFSPPNA2P2D30NB)</div>
+            <div class="card-value loading" id="cp-card-current">—</div>
+            <div id="cp-card-change-badge"></div>
+            <div class="card-date" id="cp-card-date">기준일 로딩 중...</div>
+        </div>
+    </div>
+
+    <!-- 비교 차트 -->
+    <div class="chart-section">
+        <div class="chart-header">
+            <div>
+                <div class="chart-title">시계열 비교 차트</div>
+                <div class="chart-desc">최근 60일간 HY OA Index · A2/P2 CP 금리 동시 비교</div>
+            </div>
+            <button class="refresh-btn" onclick="loadData()">새로고침</button>
+        </div>
+        <div id="chart"></div>
+    </div>
+
+</main>
+</div>
+
+<!-- ── Fed Rate 탭 ─────────────────────────────────────────────── -->
+<div id="pane-fedrate" style="display:none;">
+<main>
+
+    <div class="section-label">연준 기준금리 · 단기금리 <span style="font-size:10px;color:#2d3748;letter-spacing:0;text-transform:none;">· 출처: NY Fed Markets API</span></div>
+    <div class="fedrate-cards">
+        <!-- EFFR -->
+        <div class="nyfed-card">
+            <div class="nyfed-card-accent" style="background:#63b3ed;"></div>
+            <div class="nyfed-label">EFFR (익일물 실효금리)</div>
+            <div class="nyfed-value loading" id="nyfed-effr-rate">—<span class="nyfed-unit">%</span></div>
+            <div class="nyfed-sub" id="nyfed-effr-sub">로딩 중...</div>
+        </div>
+        <!-- SOFR -->
+        <div class="nyfed-card">
+            <div class="nyfed-card-accent" style="background:#9ae6b4;"></div>
+            <div class="nyfed-label">SOFR (담보 익일물 금리)</div>
+            <div class="nyfed-value loading" id="nyfed-sofr-rate">—<span class="nyfed-unit">%</span></div>
+            <div class="nyfed-sub" id="nyfed-sofr-sub">로딩 중...</div>
+        </div>
+        <!-- SOFR - EFFR Spread -->
+        <div class="nyfed-card">
+            <div class="nyfed-card-accent" style="background:#f6ad55;"></div>
+            <div class="nyfed-label">SOFR − EFFR Spread <span style="color:#4a5568;font-size:10px;">· ≥0.05%p 시 빨간색</span></div>
+            <div class="nyfed-value loading" id="nyfed-spread">—<span class="nyfed-unit">%p</span></div>
+            <div class="nyfed-sub" id="nyfed-spread-sub">로딩 중...</div>
+        </div>
+    </div>
+    <div class="nyfed-source" style="margin-bottom:24px;">* EFFR·SOFR: NY Fed Reference Rates  |  Target Range: FOMC 목표금리 범위</div>
+
+    <!-- 시계열 차트 -->
+    <div class="chart-section">
+        <div class="chart-header">
+            <div>
+                <div class="chart-title">EFFR · SOFR · 정책 금리 범위 (Target Range)</div>
+                <div class="chart-desc">최근 90일 시계열 — 음영 영역이 FOMC 목표 범위</div>
+            </div>
+            <button class="refresh-btn" onclick="loadNyfedHistory()">새로고침</button>
+        </div>
+        <div id="fedrate-chart"></div>
+    </div>
+
+</main>
+</div>
+
+<!-- ── Fed Operation 탭 ──────────────────────────────────────────── -->
+<div id="pane-fedop" style="display:none;">
+<main>
+
+    <div class="section-label">연준 직접 시장 개입 현황 <span style="font-size:10px;color:#2d3748;letter-spacing:0;text-transform:none;">· 출처: NY Fed Markets API</span></div>
+
+    <!-- ── 요약 카드 4개 ────────────────────────────────────────── -->
+    <div class="fedop-cards">
+        <!-- SOMA -->
+        <div class="nyfed-card">
+            <div class="nyfed-card-accent" style="background:#63b3ed;"></div>
+            <div class="nyfed-label">SOMA 총자산 (주간 변화)</div>
+            <div class="nyfed-value loading" id="fedop-soma-val">—</div>
+            <div class="nyfed-sub" id="fedop-soma-sub">로딩 중...</div>
+        </div>
+        <!-- AMBS -->
+        <div class="nyfed-card">
+            <div class="nyfed-card-accent" style="background:#9f7aea;"></div>
+            <div class="nyfed-label">Agency MBS 오퍼레이션</div>
+            <div class="nyfed-value loading" id="fedop-ambs-val">—</div>
+            <div class="nyfed-sub" id="fedop-ambs-sub">로딩 중...</div>
+            <div class="fedop-ratio" id="fedop-ambs-ratio"></div>
+        </div>
+        <!-- SecLending -->
+        <div class="nyfed-card">
+            <div class="nyfed-card-accent" style="background:#f6ad55;"></div>
+            <div class="nyfed-label">증권 대여 (Securities Lending)</div>
+            <div class="nyfed-value loading" id="fedop-seclend-val">—</div>
+            <div class="nyfed-sub" id="fedop-seclend-sub">로딩 중...</div>
+            <div class="fedop-ratio" id="fedop-seclend-ratio"></div>
+        </div>
+        <!-- TSY Outright -->
+        <div class="nyfed-card">
+            <div class="nyfed-card-accent" style="background:#68d391;"></div>
+            <div class="nyfed-label">국채 아웃라이트 (TSY Outright)</div>
+            <div class="nyfed-value loading" id="fedop-tsy-val">—</div>
+            <div class="nyfed-sub" id="fedop-tsy-sub">로딩 중...</div>
+            <div class="fedop-ratio" id="fedop-tsy-ratio"></div>
+        </div>
+        <!-- RRP (역레포) — 유동성 흡수, 주황색 -->
+        <div class="nyfed-card">
+            <div class="nyfed-card-accent" style="background:#f6ad55;"></div>
+            <div class="nyfed-label" style="display:flex;align-items:center;gap:6px;">
+                RRP (역레포 · Reverse Repo)
+                <span style="font-size:10px;background:rgba(246,173,85,0.15);color:#f6ad55;
+                             border:1px solid rgba(246,173,85,0.3);padding:1px 6px;border-radius:10px;">유동성 흡수</span>
+            </div>
+            <div class="nyfed-value loading" id="fedop-rrp-val">—</div>
+            <div class="nyfed-sub" id="fedop-rrp-sub">로딩 중...</div>
+            <div class="fedop-ratio" id="fedop-rrp-ratio"></div>
+        </div>
+        <!-- RP (레포) — 유동성 공급, 초록색 -->
+        <div class="nyfed-card">
+            <div class="nyfed-card-accent" style="background:#68d391;"></div>
+            <div class="nyfed-label" style="display:flex;align-items:center;gap:6px;">
+                RP (레포 · Repo)
+                <span style="font-size:10px;background:rgba(104,211,145,0.15);color:#68d391;
+                             border:1px solid rgba(104,211,145,0.3);padding:1px 6px;border-radius:10px;">유동성 공급</span>
+            </div>
+            <div class="nyfed-value loading" id="fedop-rp-val">—</div>
+            <div class="nyfed-sub" id="fedop-rp-sub">로딩 중...</div>
+            <div class="fedop-ratio" id="fedop-rp-ratio"></div>
+        </div>
+    </div>
+
+    <!-- ── 차트 2개 (좌우 배치) ──────────────────────────────────── -->
+    <div class="fedop-charts-row">
+        <!-- 차트 1: SOMA 주간 변화 -->
+        <div class="fedop-chart-wrap">
+            <div class="fedop-chart-title">SOMA 주간 순변화</div>
+            <div class="fedop-chart-sub">주별 연준 총자산 증감 (억 달러) · 초록=증가(완화), 빨강=감소(QT)</div>
+            <div id="fedop-soma-chart" style="width:100%;height:300px;"></div>
+        </div>
+        <!-- 차트 2: 일별 오퍼레이션 스택 바 -->
+        <div class="fedop-chart-wrap">
+            <div class="fedop-chart-title">일별 오퍼레이션 규모</div>
+            <div class="fedop-chart-sub">MBS · 증권대여 · 국채 낙찰액 합산 (억 달러)</div>
+            <div id="fedop-daily-chart" style="width:100%;height:300px;"></div>
+        </div>
+    </div>
+
+    <div class="nyfed-source" style="margin-top:6px;">
+        * SOMA: System Open Market Account 주간 기준 · AMBS: Agency MBS Outright · SecLending: Securities Lending (parAccepted) · TSY: Treasury Outright
+    </div>
+
+</main>
+</div>
+
+<!-- ── Volatility 탭 ──────────────────────────────────────────────── -->
+<div id="pane-volatility" style="display:none;">
+<main>
+
+<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;flex-wrap:wrap;gap:10px;">
+    <div>
+        <h2 style="margin:0;font-size:18px;font-weight:700;color:#e2e8f0;">채권·신용 시장 변동성</h2>
+        <p style="margin:4px 0 0;font-size:13px;color:#718096;">VIX보다 먼저 반응하는 채권·신용 시장의 공포 신호를 실시간으로 모니터링합니다.</p>
+    </div>
+    <button onclick="loadVolatility()" style="
+        background:#1a2540;border:1px solid #2d3748;color:#a0aec0;
+        padding:7px 14px;border-radius:6px;cursor:pointer;font-size:12px;">
+        ↺ 새로고침
+    </button>
+</div>
+
+<!-- KPI 카드 2개 -->
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:20px;margin-bottom:24px;">
+
+    <!-- MOVE Index 카드 -->
+    <div class="nyfed-card" style="padding:0;overflow:hidden;position:relative;">
+        <div style="background:linear-gradient(135deg,rgba(252,129,129,0.08) 0%,transparent 60%);padding:22px 24px 0;">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px;">
+                <div>
+                    <div style="font-size:11px;font-weight:600;letter-spacing:.8px;color:#718096;text-transform:uppercase;margin-bottom:4px;">MOVE INDEX</div>
+                    <div style="font-size:12px;color:#a0aec0;">미국 국채 옵션 변동성 지수</div>
+                </div>
+                <div id="vol-move-badge" style="font-size:11px;padding:3px 10px;border-radius:12px;font-weight:600;background:rgba(113,128,150,0.15);color:#718096;">— %</div>
+            </div>
+            <div style="display:flex;align-items:baseline;gap:10px;margin:10px 0 4px;">
+                <div id="vol-move-val" class="nyfed-value loading" style="font-size:42px;font-weight:800;color:#e2e8f0;">—</div>
+                <div style="font-size:13px;color:#718096;">pts</div>
+            </div>
+            <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap;">
+                <div id="vol-move-date" style="font-size:12px;color:#718096;">기준일: —</div>
+                <div id="vol-move-change" style="font-size:12px;color:#718096;"></div>
+            </div>
+        </div>
+        <!-- 스파크라인 -->
+        <div id="vol-move-chart" style="height:100px;margin:0;"></div>
+        <div style="padding:10px 24px;background:rgba(0,0,0,0.15);border-top:1px solid rgba(45,55,72,0.8);">
+            <div style="font-size:11px;color:#4a5568;">출처: Yahoo Finance (^MOVE) · 최근 30일 추세</div>
+        </div>
+    </div>
+
+    <!-- HY OAS 카드 -->
+    <div class="nyfed-card" style="padding:0;overflow:hidden;position:relative;">
+        <div style="background:linear-gradient(135deg,rgba(252,129,129,0.08) 0%,transparent 60%);padding:22px 24px 0;">
+            <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:6px;">
+                <div>
+                    <div style="font-size:11px;font-weight:600;letter-spacing:.8px;color:#718096;text-transform:uppercase;margin-bottom:4px;">ICE US HY OAS</div>
+                    <div style="font-size:12px;color:#a0aec0;">미국 하이일드 채권 옵션조정 스프레드</div>
+                </div>
+                <div id="vol-hy-badge" style="font-size:11px;padding:3px 10px;border-radius:12px;font-weight:600;background:rgba(113,128,150,0.15);color:#718096;">— %</div>
+            </div>
+            <div style="display:flex;align-items:baseline;gap:10px;margin:10px 0 4px;">
+                <div id="vol-hy-val" class="nyfed-value loading" style="font-size:42px;font-weight:800;color:#e2e8f0;">—</div>
+                <div style="font-size:13px;color:#718096;">%</div>
+            </div>
+            <div style="display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap;">
+                <div id="vol-hy-date" style="font-size:12px;color:#718096;">기준일: —</div>
+                <div id="vol-hy-change" style="font-size:12px;color:#718096;"></div>
+            </div>
+        </div>
+        <!-- 스파크라인 -->
+        <div id="vol-hy-chart" style="height:100px;margin:0;"></div>
+        <div style="padding:10px 24px;background:rgba(0,0,0,0.15);border-top:1px solid rgba(45,55,72,0.8);">
+            <div style="font-size:11px;color:#4a5568;">출처: FRED BAMLH0A0HYM2 · 최근 30일 추세 (%, 1.00 = 100bps)</div>
+        </div>
+    </div>
+
+</div>
+
+<!-- 알람 임계치 안내 -->
+<div style="background:#1a2540;border:1px solid #2d3748;border-radius:10px;padding:14px 18px;font-size:12px;color:#718096;">
+    <strong style="color:#a0aec0;">알람 기준</strong> &nbsp;·&nbsp;
+    MOVE Index ±5% 이상 변동 시 텔레그램 알람 발송 &nbsp;|&nbsp;
+    HY OAS ±3% 이상 변동 시 텔레그램 알람 발송
+</div>
+
+</main>
+</div>
+
+<!-- ── Data History 탭 ──────────────────────────────────────────── -->
+<div id="pane-history" style="display:none;">
+<main>
+
+    <!-- HY OA Index 아코디언 -->
+    <div class="history-section" id="acc-hy">
+        <div class="history-header" onclick="toggleAccordion('acc-hy')">
+            <div class="history-header-left">
+                <div>
+                    <div class="history-title">HY OA Index <span style="color:#4299e1;">(BAMLH0A0HYM2)</span></div>
+                    <div class="history-desc">ICE BofA US High Yield Index Option-Adjusted Spread · 최신 순</div>
+                </div>
+            </div>
+            <div class="history-header-right">
+                <span class="history-count" id="hy-count">로딩 중...</span>
+                <span class="history-arrow">▼</span>
+            </div>
+        </div>
+        <div class="history-body">
+            <table>
+                <thead>
+                    <tr>
+                        <th>날짜</th>
+                        <th>지표 값</th>
+                        <th>전일 대비 변동</th>
+                        <th>변동폭 (%)</th>
+                    </tr>
+                </thead>
+                <tbody id="hy-tbody">
+                    <tr><td colspan="4" class="history-loading">데이터 로딩 중...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+    <!-- CP 금리 아코디언 -->
+    <div class="history-section" id="acc-cp">
+        <div class="history-header" onclick="toggleAccordion('acc-cp')">
+            <div class="history-header-left">
+                <div>
+                    <div class="history-title">A2/P2 비금융 CP 금리 30일 <span style="color:#f6ad55;">(RIFSPPNA2P2D30NB)</span></div>
+                    <div class="history-desc">30-Day A2/P2 Nonfinancial Commercial Paper Interest Rate · 최신 순</div>
+                </div>
+            </div>
+            <div class="history-header-right">
+                <span class="history-count" id="cp-count">로딩 중...</span>
+                <span class="history-arrow">▼</span>
+            </div>
+        </div>
+        <div class="history-body">
+            <table>
+                <thead>
+                    <tr>
+                        <th>날짜</th>
+                        <th>금리 (%)</th>
+                        <th>전일 대비 변동</th>
+                        <th>변동폭 (%)</th>
+                    </tr>
+                </thead>
+                <tbody id="cp-tbody">
+                    <tr><td colspan="4" class="history-loading">데이터 로딩 중...</td></tr>
+                </tbody>
+            </table>
+        </div>
+    </div>
+
+</main>
+</div>
+
+<!-- ── JPY Swap 탭 ──────────────────────────────────────────── -->
+<div id="pane-jpy" style="display:none;">
+<main>
+
+    <!-- 상태 배너 -->
+    <div id="jpy-status-bar" class="jpy-status-bar" style="display:none;">
+        <span style="font-size:15px;">⏳</span>
+        <span id="jpy-status-msg">데이터 확인 중 (Retry...)</span>
+    </div>
+
+    <div class="section-label">USD/JPY 외환 포워드 레이트 (Investing.com)</div>
+
+    <!-- 기간별 데이터 테이블 -->
+    <div class="jpy-table-wrap">
+        <table class="jpy-table">
+            <thead>
+                <tr>
+                    <th>기간</th>
+                    <th>Bid (포인트)</th>
+                    <th>Change</th>
+                    <th>% Change</th>
+                    <th class="jpy-th-yield">연율화 비용(%)<span class="jpy-th-hint" title="(포워드포인트 ÷ 100 ÷ Spot) × (360 ÷ 만기일수) × 100&#10;음수 = 달러 조달 프리미엄 지불">ⓘ</span></th>
+                    <th>기준 시각</th>
+                </tr>
+            </thead>
+            <tbody id="jpy-tbody">
+                <tr><td colspan="6" style="text-align:center;color:#4a5568;padding:20px;">로딩 중...</td></tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- Spot Rate 표시 -->
+    <div id="jpy-spot-bar" style="display:none; margin-top:-12px; margin-bottom:16px; padding:8px 14px;
+         background:rgba(99,179,237,0.08); border:1px solid rgba(99,179,237,0.25);
+         border-radius:8px; font-size:13px; color:#90cdf4; display:flex; align-items:center; gap:10px;">
+        <span style="color:#4a5568; font-size:11px;">●</span>
+        <span>USD/JPY Spot Rate: <strong id="jpy-spot-val" style="color:#63b3ed;">—</strong></span>
+        <span style="color:#2d3748; font-size:11px; margin-left:6px;">연율화 비용 계산 기준</span>
+    </div>
+
+    <!-- Japan 30Y JGB 참조 패널 -->
+    <div id="jpy-30y-panel" style="margin-top:18px; padding:12px 18px;
+         background:rgba(99,179,237,0.06); border:1px solid rgba(99,179,237,0.20);
+         border-radius:8px; display:flex; align-items:center; gap:16px; flex-wrap:wrap;">
+        <div style="font-size:12px; color:#4a5568; white-space:nowrap;">
+            📈 초장기 국채 참조
+        </div>
+        <div style="display:flex; align-items:baseline; gap:8px;">
+            <span style="font-size:12px; color:#718096;">Japan 30Y JGB</span>
+            <span id="jpy-30y-last" style="font-size:15px; font-weight:700; color:#90cdf4;">—</span>
+            <span style="font-size:11px; color:#718096;">%</span>
+            <span id="jpy-30y-chg" style="font-size:12px; margin-left:4px;"></span>
+            <span id="jpy-30y-pct" style="font-size:12px;"></span>
+        </div>
+        <div style="font-size:10px; color:#4a5568; margin-left:auto;" id="jpy-30y-ts"></div>
+    </div>
+
+    <div style="margin-top:10px; font-size:11px; color:#2d3748; text-align:right;">
+        ※ 값 단위: 포인트 (pip × 100) · 음수 = JPY 포워드 디스카운트 (금리차 반영)
+        &nbsp;|&nbsp; 연율화 비용 음수 = 달러 조달 시 프리미엄 지불
+        &nbsp;|&nbsp; 매 1시간 자동 갱신
+    </div>
+
+</main>
+</div>
+
+<style>
+.jpy-status-bar {
+    margin-bottom: 14px;
+    padding: 10px 16px;
+    border-radius: 8px;
+    background: rgba(246,173,85,0.12);
+    border: 1px solid rgba(246,173,85,0.35);
+    color: #f6ad55;
+    font-size: 13px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+.jpy-table-wrap {
+    background: #141e2e;
+    border: 1px solid #1e3a5f;
+    border-radius: 10px;
+    overflow: hidden;
+    margin-bottom: 24px;
+}
+.jpy-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 14px;
+}
+.jpy-table thead tr {
+    background: #1a2a42;
+}
+.jpy-table th {
+    padding: 12px 16px;
+    text-align: left;
+    color: #5c7a9a;
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    border-bottom: 1px solid #1e3a5f;
+}
+.jpy-table tbody tr {
+    border-bottom: 1px solid #1a2a42;
+    transition: background 0.15s;
+}
+.jpy-table tbody tr:hover { background: rgba(99,179,237,0.06); }
+.jpy-table tbody tr:last-child { border-bottom: none; }
+.jpy-table td {
+    padding: 14px 16px;
+    color: #e2e8f0;
+}
+.jpy-period-badge {
+    display: inline-block;
+    padding: 2px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 700;
+    background: rgba(99,179,237,0.15);
+    color: #90cdf4;
+    letter-spacing: 0.04em;
+}
+.jpy-bid {
+    font-size: 16px;
+    font-weight: 700;
+    color: #e2e8f0;
+    font-variant-numeric: tabular-nums;
+}
+.jpy-change-pos  { color: #68d391; font-weight: 600; }
+.jpy-change-neg  { color: #fc8181; font-weight: 600; }
+.jpy-change-zero { color: #a0aec0; }
+.jpy-pct { font-weight: 600; font-size: 13px; }
+
+/* ▲▼ 아이콘 */
+.jpy-arrow-up   { color: #68d391; font-size: 11px; margin-right:2px; }
+.jpy-arrow-down { color: #fc8181; font-size: 11px; margin-right:2px; }
+
+/* 연율화 비용 컬럼 */
+.jpy-th-yield {
+    background: rgba(99,179,237,0.07);
+    color: #90cdf4 !important;
+    border-left: 1px solid rgba(99,179,237,0.2);
+}
+.jpy-th-hint {
+    margin-left: 4px;
+    font-size: 11px;
+    color: #4a6fa5;
+    cursor: help;
+    vertical-align: middle;
+}
+.jpy-yield-neg {
+    color: #fc8181;
+    font-weight: 700;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+}
+.jpy-yield-pos {
+    color: #68d391;
+    font-weight: 700;
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+}
+.jpy-yield-zero { color: #a0aec0; font-size: 14px; }
+.jpy-yield-na   { color: #2d3748; font-size: 13px; font-style: italic; }
+.jpy-yield-cell {
+    background: rgba(99,179,237,0.04);
+    border-left: 1px solid rgba(99,179,237,0.12);
+}
+</style>
+
+<script>
+// ── 아코디언 토글 ─────────────────────────────────────────────
+function toggleAccordion(id) {
+    document.getElementById(id).classList.toggle('open');
+}
+
+// ── 탭 전환 ──────────────────────────────────────────────────
+const ALL_TABS = ['portfolio', 'fedrate', 'jpy', 'credit', 'fedop', 'volatility', 'history'{% if current_user.is_authenticated and current_user.is_admin() %}, 'admin'{% endif %}];
+let historyLoaded     = false;
+let fedRateLoaded     = false;
+let fedOpLoaded       = false;
+let jpyLoaded         = false;
+let portfolioLoaded   = false;
+let volatilityLoaded  = false;
+
+function switchTab(tab) {
+    ALL_TABS.forEach(t => {
+        document.getElementById('pane-' + t).style.display  = t === tab ? '' : 'none';
+        document.getElementById('tab-btn-' + t).classList.toggle('active', t === tab);
+    });
+    if (tab === 'history' && !historyLoaded) {
+        loadHistory();
+    }
+    if (tab === 'fedrate' && !fedRateLoaded) {
+        loadNyfedHistory();
+    }
+    if (tab === 'fedop' && !fedOpLoaded) {
+        loadFedOp();
+    }
+    if (tab === 'jpy' && !jpyLoaded) {
+        loadJpy();
+    }
+    if (tab === 'portfolio') {
+        loadPortfolio(false);
+    }
+    if (tab === 'volatility') {
+        loadVolatility();
+    }
+}
+
+// ── FRED 데이터 로드 (Credit 탭) ──────────────────────────────
+async function loadData() {
+    try {
+        const res  = await fetch('/data');
+        const data = await res.json();
+
+        if (data.observation_date) {
+            document.getElementById('observation-date').textContent = data.observation_date;
+        }
+
+        if (data.last_fetched_at) {
+            document.getElementById('last-fetched').textContent = 'FRED 갱신: ' + data.last_fetched_at;
+        } else {
+            document.getElementById('last-fetched').textContent = '서버 시각: ' + (data.server_time_kst || '—');
+        }
+
+        if (data.next_schedule) {
+            document.getElementById('next-schedule').textContent = '다음 자동 갱신: ' + data.next_schedule;
+        }
+
+        // HY OA 카드
+        if (data.current) {
+            document.getElementById('card-current').textContent = data.current.value.toFixed(4);
+            document.getElementById('card-current').classList.remove('loading');
+            document.getElementById('card-date').textContent = '기준일: ' + data.current.date;
+        }
+
+        if (data.change_pct !== null && data.change_pct !== undefined) {
+            const sign = data.change_pct >= 0 ? '+' : '';
+            const cls  = data.change_pct > 0 ? 'up' : data.change_pct < 0 ? 'down' : 'neutral';
+            document.getElementById('card-change-badge').innerHTML =
+                `<span class="card-change-badge ${cls}">${sign}${data.change_pct}% 전일 대비</span>`;
+        }
+
+        if (data.alert) {
+            document.getElementById('alert-banner').classList.remove('hidden');
+            const sign = data.change_pct >= 0 ? '+' : '';
+            document.getElementById('alert-text').textContent =
+                `HY OA Index 전일 대비 ${sign}${data.change_pct}% 변동 (기준: ±5%). 텔레그램 알람 뼈대 준비 완료.`;
+        }
+
+        // CP 금리 카드
+        const cp = data.cp;
+        if (cp && cp.current) {
+            document.getElementById('cp-card-current').textContent = cp.current.value.toFixed(4);
+            document.getElementById('cp-card-current').classList.remove('loading');
+            document.getElementById('cp-card-date').textContent = '기준일: ' + cp.current.date;
+        }
+
+        if (cp && cp.change_pct !== null && cp.change_pct !== undefined) {
+            const cpSign = cp.change_pct >= 0 ? '+' : '';
+            const cpCls  = cp.change_pct > 0 ? 'up' : cp.change_pct < 0 ? 'down' : 'neutral';
+            document.getElementById('cp-card-change-badge').innerHTML =
+                `<span class="card-change-badge ${cpCls}">${cpSign}${cp.change_pct}% 전일 대비</span>`;
+        }
+
+        renderChart(data.records, cp ? cp.records : []);
+
+    } catch(e) {
+        console.error('FRED 데이터 로드 실패:', e);
+    }
+}
+
+// ── 비교 차트 렌더링 ─────────────────────────────────────────
+function renderChart(hyRecords, cpRecords) {
+    const traceHY = {
+        x: hyRecords.map(r => r.date),
+        y: hyRecords.map(r => r.value),
+        type: 'scatter',
+        mode: 'lines+markers',
+        name: 'HY OA Index',
+        yaxis: 'y1',
+        line: { color: '#4299e1', width: 2.5, shape: 'spline' },
+        marker: { size: 4, color: '#4299e1' },
+        hovertemplate: '<b>%{x}</b><br>HY OA: %{y:.4f}<extra></extra>'
+    };
+
+    const traces = [traceHY];
+
+    if (cpRecords && cpRecords.length > 0) {
+        traces.push({
+            x: cpRecords.map(r => r.date),
+            y: cpRecords.map(r => r.value),
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: 'A2/P2 CP 금리 (30일)',
+            yaxis: 'y2',
+            line: { color: '#f6ad55', width: 2.5, shape: 'spline', dash: 'dot' },
+            marker: { size: 4, color: '#f6ad55' },
+            hovertemplate: '<b>%{x}</b><br>CP 금리: %{y:.4f}%<extra></extra>'
+        });
+    }
+
+    Plotly.newPlot('chart', traces, {
+        paper_bgcolor: '#1a1d2e',
+        plot_bgcolor:  '#1a1d2e',
+        font: { color: '#a0aec0', family: 'Segoe UI, Malgun Gothic, sans-serif', size: 12 },
+        xaxis: { showgrid: false, zeroline: false, tickfont: { color: '#4a5568', size: 11 }, tickangle: -30 },
+        yaxis: {
+            title: { text: 'HY OA Index', font: { color: '#4299e1', size: 11 } },
+            showgrid: true, gridcolor: '#2d3748', zeroline: false,
+            tickfont: { color: '#4299e1', size: 11 }, tickformat: '.2f', side: 'left'
+        },
+        yaxis2: {
+            title: { text: 'CP 금리 (%)', font: { color: '#f6ad55', size: 11 } },
+            showgrid: false, zeroline: false,
+            tickfont: { color: '#f6ad55', size: 11 }, tickformat: '.2f',
+            overlaying: 'y', side: 'right'
+        },
+        legend: {
+            x: 0.01, y: 0.99,
+            bgcolor: 'rgba(26,29,46,0.8)', bordercolor: '#2d3748', borderwidth: 1,
+            font: { color: '#a0aec0', size: 12 }
+        },
+        margin: { l: 55, r: 65, t: 20, b: 50 },
+        hovermode: 'x unified',
+        showlegend: true
+    }, { responsive: true, displayModeBar: false });
+}
+
+// ── Data History 로드 ─────────────────────────────────────────
+async function loadHistory() {
+    try {
+        const res  = await fetch('/history');
+        const data = await res.json();
+
+        const hy = data['BAMLH0A0HYM2'];
+        const cp = data['RIFSPPNA2P2D30NB'];
+
+        if (hy) {
+            document.getElementById('hy-count').textContent = '총 ' + hy.total_count.toLocaleString() + '건';
+            document.getElementById('hy-tbody').innerHTML = buildTableRows(hy.records);
+        }
+
+        if (cp) {
+            document.getElementById('cp-count').textContent = '총 ' + cp.total_count.toLocaleString() + '건';
+            document.getElementById('cp-tbody').innerHTML = buildTableRows(cp.records);
+        }
+
+        historyLoaded = true;
+    } catch(e) {
+        console.error('히스토리 데이터 로드 실패:', e);
+    }
+}
+
+function buildTableRows(records) {
+    if (!records || records.length === 0) {
+        return '<tr><td colspan="4" class="history-loading">데이터 없음</td></tr>';
+    }
+
+    return records.map(r => {
+        let changeTd = '<td class="change-neutral">—</td><td class="change-neutral">—</td>';
+        if (r.change !== null && r.change !== undefined) {
+            const sign    = r.change >= 0 ? '+' : '';
+            const pctSign = r.change_pct >= 0 ? '+' : '';
+            const cls     = r.change > 0 ? 'change-up' : r.change < 0 ? 'change-down' : 'change-neutral';
+            changeTd = `<td class="${cls}">${sign}${r.change.toFixed(4)}</td>` +
+                       `<td class="${cls}">${pctSign}${r.change_pct}%</td>`;
+        }
+        return `<tr>
+            <td>${r.date}</td>
+            <td class="value">${r.value.toFixed(4)}</td>
+            ${changeTd}
+        </tr>`;
+    }).join('');
+}
+
+// ── 거래량 단위 변환 (Billions → 한국어 억/조) ────────────────
+// 1 Billion = 10억  |  1조 = 10,000억
+function formatVolume(billions) {
+    if (billions == null) return null;
+    const eok = Math.round(billions * 10);      // Billion → 억
+    if (eok >= 10000) {
+        const jo  = Math.floor(eok / 10000);
+        const rem = eok % 10000;
+        return rem > 0
+            ? `${jo}조 ${rem.toLocaleString()}억 달러`
+            : `${jo}조 달러`;
+    }
+    return `${eok.toLocaleString()}억 달러`;
+}
+
+// ── NY Fed 데이터 로드 ───────────────────────────────────────
+async function loadNyfed() {
+    try {
+        const res = await fetch('/nyfed');
+        const d   = await res.json();
+
+        // EFFR
+        if (d.effr) {
+            const el  = document.getElementById('nyfed-effr-rate');
+            el.innerHTML = d.effr.rate.toFixed(2) + '<span class="nyfed-unit">%</span>';
+            el.classList.remove('loading');
+            const volStr = d.effr.volume_billions != null
+                ? `거래량: ${formatVolume(d.effr.volume_billions)}`
+                : '';
+            document.getElementById('nyfed-effr-sub').innerHTML =
+                `<span class="nyfed-vol">${volStr}</span>${volStr ? ' · ' : ''}기준일: ${d.effr.date}`;
+        }
+
+        // SOFR
+        if (d.sofr) {
+            const el  = document.getElementById('nyfed-sofr-rate');
+            el.innerHTML = d.sofr.rate.toFixed(2) + '<span class="nyfed-unit">%</span>';
+            el.classList.remove('loading');
+            const volStr = d.sofr.volume_billions != null
+                ? `거래량: ${formatVolume(d.sofr.volume_billions)}`
+                : '';
+            document.getElementById('nyfed-sofr-sub').innerHTML =
+                `<span class="nyfed-vol">${volStr}</span>${volStr ? ' · ' : ''}기준일: ${d.sofr.date}`;
+        }
+
+        // SOFR - EFFR Spread: 공통 날짜 기준, 날짜 불일치 시 '데이터 대기 중'
+        const spreadEl  = document.getElementById('nyfed-spread');
+        const spreadSub = document.getElementById('nyfed-spread-sub');
+        if (d.spread_date && d.spread !== null && d.spread !== undefined) {
+            const spread   = d.spread;
+            const sign     = spread >= 0 ? '+' : '';
+            const isAlert  = Math.abs(spread) >= 0.05;
+            const cls      = isAlert ? 'spread-alert'
+                           : spread > 0 ? 'nyfed-spread-pos'
+                           : spread < 0 ? 'nyfed-spread-neg'
+                           : 'nyfed-spread-zero';
+            spreadEl.innerHTML = `<span class="${cls}">${sign}${spread.toFixed(2)}</span><span class="nyfed-unit">%p</span>`;
+            spreadEl.classList.remove('loading');
+            const effrRate = d.effr?.rate?.toFixed(2) ?? '—';
+            const sofrRate = d.sofr?.rate?.toFixed(2) ?? '—';
+            spreadSub.textContent =
+                `SOFR(${sofrRate}%) − EFFR(${effrRate}%) · 공통기준일: ${d.spread_date}${isAlert ? '  ⚠️ 임계값 초과' : ''}`;
+        } else {
+            spreadEl.innerHTML = `<span class="nyfed-spread-zero" style="font-size:18px;">데이터 대기 중</span>`;
+            spreadEl.classList.remove('loading');
+            const effrDate = d.effr?.date ?? '—';
+            const sofrDate = d.sofr?.date ?? '—';
+            spreadSub.textContent = `EFFR 기준일: ${effrDate} · SOFR 기준일: ${sofrDate} (공통일 없음)`;
+        }
+
+        // RRP (fedop 탭 내 rrp 카드가 있을 경우에만 업데이트)
+        if (d.rrp) {
+            const el  = document.getElementById('nyfed-rrp-amt');
+            if (el) {
+                const amt = d.rrp.total_amt_billions;
+                let display, unit;
+                if (amt >= 1000) {
+                    display = (amt / 1000).toFixed(2);
+                    unit    = '조 달러';
+                } else if (amt >= 1) {
+                    display = amt.toFixed(2);
+                    unit    = '십억$';
+                } else {
+                    display = (amt * 1000).toFixed(0);
+                    unit    = '백만$';
+                }
+                el.innerHTML = `${display}<span class="nyfed-unit">${unit}</span>`;
+                el.classList.remove('loading');
+                const subEl = document.getElementById('nyfed-rrp-sub');
+                if (subEl) subEl.textContent = `기준일: ${d.rrp.date} · ON Reverse Repo`;
+            }
+        }
+
+    } catch(e) {
+        console.error('NY Fed 데이터 로드 실패:', e);
+    }
+}
+
+// ── Fed Operation 탭 로드 ────────────────────────────────────
+
+// SOMA: Billions → 조 달러 형식
+function formatSoma(bil) {
+    const tri = bil / 1000;
+    return tri.toFixed(3) + '조 달러';
+}
+
+// Billions → 억 달러 (1B = 10억)
+function bilToEok(bil) {
+    return Math.round(bil * 10);
+}
+
+function formatEok(bil) {
+    const eok = bilToEok(bil);
+    if (eok >= 10000) {
+        const jo  = Math.floor(eok / 10000);
+        const rem = eok % 10000;
+        return rem > 0 ? `${jo}조 ${rem.toLocaleString()}억 달러` : `${jo}조 달러`;
+    }
+    return eok.toLocaleString() + '억 달러';
+}
+
+const PLOTLY_FEDOP_CFG = { displayModeBar: false, responsive: true };
+const PLOTLY_FEDOP_LAYOUT_BASE = {
+    paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+    font: { color: '#e2e8f0', size: 11 },
+    margin: { l: 52, r: 16, t: 12, b: 50 },
+    xaxis: { gridcolor: '#2d3748', tickfont: { size: 10 } },
+    yaxis: { gridcolor: '#2d3748', tickfont: { size: 10 }, zeroline: true, zerolinecolor: '#4a5568' },
+    legend: { bgcolor: 'transparent', font: { size: 11 }, orientation: 'h', y: -0.25 },
+    bargap: 0.25,
+};
+
+async function loadFedOp() {
+    try {
+        // ── 1. 요약 카드 ─────────────────────────────────────────
+        const res  = await fetch('/fedop');
+        const d    = await res.json();
+
+        // SOMA
+        if (d.soma) {
+            const change   = d.soma.change_bil;
+            const isUp     = change >= 0;
+            const cls      = isUp ? 'fedop-change-up' : 'fedop-change-down';
+            const sign     = isUp ? '+' : '';
+            const changeEok = Math.round(Math.abs(change) * 10);
+            document.getElementById('fedop-soma-val').innerHTML =
+                `<span class="${cls}" style="font-size:22px;">${sign}${formatEok(Math.abs(change))}</span>`;
+            document.getElementById('fedop-soma-val').classList.remove('loading');
+            document.getElementById('fedop-soma-sub').textContent =
+                `총 ${formatSoma(d.soma.total_bil)} · 기준일: ${d.soma.latest_date} (전주: ${d.soma.prev_date})`;
+        } else {
+            document.getElementById('fedop-soma-val').textContent = '데이터 없음';
+            document.getElementById('fedop-soma-val').classList.remove('loading');
+            document.getElementById('fedop-soma-sub').textContent = '—';
+        }
+
+        // 낙찰비율 렌더 헬퍼
+        function setRatioBadge(elId, ratio) {
+            const el = document.getElementById(elId);
+            if (!el) return;
+            if (ratio !== null && ratio !== undefined) {
+                el.innerHTML = `낙찰비율 <span class="fedop-ratio-badge">${ratio.toFixed(1)}%</span>`;
+            } else {
+                el.textContent = '';
+            }
+        }
+
+        // AMBS
+        if (d.ambs) {
+            const dir    = d.ambs.direction === 'P' ? '매입' : d.ambs.direction === 'S' ? '매도' : d.ambs.direction;
+            const badge  = d.ambs.direction === 'P' ? 'fedop-badge-up' : 'fedop-badge-sale';
+            document.getElementById('fedop-ambs-val').innerHTML =
+                `<span class="fedop-card-badge ${badge}">${dir}</span><br>${formatEok(d.ambs.total_bil)}`;
+            document.getElementById('fedop-ambs-val').classList.remove('loading');
+            document.getElementById('fedop-ambs-sub').textContent =
+                `기준일: ${d.ambs.op_date} · ${(d.ambs.types || '').split(' / ')[0]}`;
+            setRatioBadge('fedop-ambs-ratio', d.ambs.accept_ratio);
+        } else {
+            document.getElementById('fedop-ambs-val').textContent = '거래 없음';
+            document.getElementById('fedop-ambs-val').classList.remove('loading');
+            document.getElementById('fedop-ambs-sub').textContent = '최근 오퍼레이션 없음';
+        }
+
+        // SecLending
+        if (d.seclending) {
+            document.getElementById('fedop-seclend-val').textContent = formatEok(d.seclending.total_bil);
+            document.getElementById('fedop-seclend-val').classList.remove('loading');
+            document.getElementById('fedop-seclend-sub').textContent = `기준일: ${d.seclending.op_date} · 낙찰 parAmount`;
+            setRatioBadge('fedop-seclend-ratio', d.seclending.accept_ratio);
+        } else {
+            document.getElementById('fedop-seclend-val').textContent = '데이터 없음';
+            document.getElementById('fedop-seclend-val').classList.remove('loading');
+            document.getElementById('fedop-seclend-sub').textContent = '—';
+        }
+
+        // TSY Outright
+        if (d.tsy) {
+            const dir   = d.tsy.direction === 'P' ? '매입' : d.tsy.direction === 'S' ? '매도' : d.tsy.direction;
+            const badge = d.tsy.direction === 'S' ? 'fedop-badge-sale' : 'fedop-badge-up';
+            document.getElementById('fedop-tsy-val').innerHTML =
+                `<span class="fedop-card-badge ${badge}">${dir}</span><br>${formatEok(d.tsy.total_bil)}`;
+            document.getElementById('fedop-tsy-val').classList.remove('loading');
+            document.getElementById('fedop-tsy-sub').textContent =
+                `기준일: ${d.tsy.op_date} · ${(d.tsy.types || '').split(' / ')[0]}`;
+            setRatioBadge('fedop-tsy-ratio', d.tsy.accept_ratio);
+        } else {
+            document.getElementById('fedop-tsy-val').textContent = '데이터 없음';
+            document.getElementById('fedop-tsy-val').classList.remove('loading');
+            document.getElementById('fedop-tsy-sub').textContent = '—';
+        }
+
+        // RRP (역레포) — 유동성 흡수
+        function renderRpCard(key, valId, subId, ratioId, changeColor) {
+            const r = d[key];
+            if (r) {
+                const eok      = formatEok(r.total_accepted_bil);
+                let changeHtml = '';
+                if (r.change_bil !== null && r.change_bil !== undefined) {
+                    const up   = r.change_bil >= 0;
+                    const sym  = up ? '▲' : '▼';
+                    const cls  = up ? changeColor.up : changeColor.dn;
+                    changeHtml = ` <span style="font-size:13px;${cls}">${sym}${formatEok(Math.abs(r.change_bil))}</span>`;
+                }
+                document.getElementById(valId).innerHTML = eok + changeHtml;
+                document.getElementById(valId).classList.remove('loading');
+                const subParts = [`기준일: ${r.op_date}`];
+                if (r.prev_date) subParts.push(`전일: ${r.prev_date}`);
+                document.getElementById(subId).textContent = subParts.join(' · ');
+                // 낙찰률 배지
+                const ratioEl = document.getElementById(ratioId);
+                if (ratioEl && r.accept_ratio !== null && r.accept_ratio !== undefined) {
+                    ratioEl.innerHTML = `낙찰률 <span class="fedop-ratio-badge">${r.accept_ratio.toFixed(1)}%</span>`;
+                } else if (ratioEl) {
+                    ratioEl.textContent = '';
+                }
+            } else {
+                document.getElementById(valId).textContent = '오퍼레이션 없음';
+                document.getElementById(valId).classList.remove('loading');
+                document.getElementById(subId).textContent = '최근 14일 내 오퍼레이션 없음';
+            }
+        }
+        renderRpCard('rrp', 'fedop-rrp-val', 'fedop-rrp-sub', 'fedop-rrp-ratio',
+            { up: 'color:#f6ad55;', dn: 'color:#68d391;' });   // RRP↑=흡수↑=주황, RRP↓=흡수↓=초록
+        renderRpCard('rp',  'fedop-rp-val',  'fedop-rp-sub',  'fedop-rp-ratio',
+            { up: 'color:#68d391;', dn: 'color:#fc8181;' });    // RP↑=공급↑=초록, RP↓=공급↓=빨강
+
+        // ── 2. 차트 ─────────────────────────────────────────────
+        const hRes  = await fetch('/fedop/history');
+        const hData = await hRes.json();
+
+        // 차트 1: SOMA 주간 변화 막대 그래프
+        const soma  = hData.soma_weekly || [];
+        if (soma.length > 0) {
+            const somaDates  = soma.map(r => r.date);
+            const somaEoks   = soma.map(r => bilToEok(r.change_bil));
+            const somaColors = somaEoks.map(v => v >= 0 ? '#68d391' : '#fc8181');
+            Plotly.newPlot('fedop-soma-chart', [{
+                type: 'bar', x: somaDates, y: somaEoks,
+                marker: { color: somaColors },
+                name: 'SOMA 주간 변화',
+                hovertemplate: '%{x}<br>%{y:,.0f}억 달러<extra></extra>',
+            }], {
+                ...PLOTLY_FEDOP_LAYOUT_BASE,
+                yaxis: { ...PLOTLY_FEDOP_LAYOUT_BASE.yaxis, title: { text: '억 달러', font: { size: 11 } } },
+            }, PLOTLY_FEDOP_CFG);
+        }
+
+        // 차트 2: 일별 오퍼레이션 스택 바 차트
+        const daily = hData.daily_ops || [];
+        if (daily.length > 0) {
+            const dates   = daily.map(r => r.date);
+            const ambs    = daily.map(r => bilToEok(r.ambs_bil    || 0));
+            const seclend = daily.map(r => bilToEok(r.seclend_bil || 0));
+            const tsy     = daily.map(r => bilToEok(r.tsy_bil     || 0));
+
+            // 낙찰비율 텍스트: 값이 있는 경우에만 표시, 0이면 빈 문자열
+            const ambsText    = daily.map((r, i) => (ambs[i]    > 0 && r.ambs_ratio    != null) ? `${r.ambs_ratio.toFixed(1)}%`    : '');
+            const seclendText = daily.map((r, i) => (seclend[i] > 0 && r.seclend_ratio != null) ? `${r.seclend_ratio.toFixed(1)}%` : '');
+            const tsyText     = daily.map((r, i) => (tsy[i]     > 0 && r.tsy_ratio     != null) ? `${r.tsy_ratio.toFixed(1)}%`     : '');
+
+            Plotly.newPlot('fedop-daily-chart', [
+                {
+                    type: 'bar', name: 'Agency MBS', x: dates, y: ambs,
+                    marker: { color: '#9f7aea' },
+                    text: ambsText, textposition: 'auto',
+                    textfont: { size: 10, color: '#fff' },
+                    hovertemplate: '%{x}<br>MBS: %{y:,.0f}억 달러<extra></extra>',
+                },
+                {
+                    type: 'bar', name: '증권 대여', x: dates, y: seclend,
+                    marker: { color: '#f6ad55' },
+                    text: seclendText, textposition: 'auto',
+                    textfont: { size: 10, color: '#fff' },
+                    hovertemplate: '%{x}<br>SecLending: %{y:,.0f}억 달러<extra></extra>',
+                },
+                {
+                    type: 'bar', name: '국채 아웃라이트', x: dates, y: tsy,
+                    marker: { color: '#68d391' },
+                    text: tsyText, textposition: 'auto',
+                    textfont: { size: 10, color: '#1a2333' },
+                    hovertemplate: '%{x}<br>TSY: %{y:,.0f}억 달러<extra></extra>',
+                },
+            ], {
+                ...PLOTLY_FEDOP_LAYOUT_BASE,
+                barmode: 'stack',
+                yaxis: { ...PLOTLY_FEDOP_LAYOUT_BASE.yaxis, title: { text: '억 달러', font: { size: 11 } } },
+            }, PLOTLY_FEDOP_CFG);
+        }
+
+        fedOpLoaded = true;
+
+    } catch(e) {
+        console.error('FedOp 데이터 로드 실패:', e);
+    }
+}
+
+// ── Volatility 탭 ────────────────────────────────────────────
+async function loadVolatility() {
+    try {
+        const res  = await fetch('/volatility');
+        const data = await res.json();
+
+        function renderVolCard(info, valId, dateId, changeId, badgeId, chartId) {
+            if (!info) {
+                document.getElementById(valId).textContent = '데이터 없음';
+                document.getElementById(valId).classList.remove('loading');
+                document.getElementById(dateId).textContent = '수집 중 — 잠시 후 새로고침하세요';
+                return;
+            }
+            const v    = info.latest.value;
+            const pct  = info.change_pct;
+            const up   = pct !== null && pct > 0;
+            const down = pct !== null && pct < 0;
+
+            // 메인 수치 — 빨간색(급등) / 파란색(하락)
+            const valEl = document.getElementById(valId);
+            valEl.textContent = v !== null ? v.toFixed(2) : '—';
+            valEl.classList.remove('loading');
+            valEl.style.color = up ? '#fc8181' : down ? '#63b3ed' : '#e2e8f0';
+
+            // 기준일
+            document.getElementById(dateId).textContent = '기준일: ' + (info.latest.date || '—');
+
+            // 전일 대비 변화
+            const chEl = document.getElementById(changeId);
+            if (info.change !== null && info.change !== undefined) {
+                const sign = info.change >= 0 ? '+' : '';
+                const col  = up ? '#fc8181' : down ? '#63b3ed' : '#a0aec0';
+                chEl.innerHTML = `<span style="color:${col};font-weight:600;">${sign}${info.change.toFixed(2)}</span> 전일 대비`;
+            }
+
+            // 변화율 배지
+            const bEl = document.getElementById(badgeId);
+            if (pct !== null && pct !== undefined) {
+                const sign = pct >= 0 ? '+' : '';
+                const bg   = up   ? 'rgba(252,129,129,0.15)' :
+                             down ? 'rgba(99,179,237,0.15)' : 'rgba(113,128,150,0.15)';
+                const col  = up   ? '#fc8181' : down ? '#63b3ed' : '#718096';
+                bEl.style.background = bg;
+                bEl.style.color      = col;
+                bEl.textContent      = `${sign}${pct.toFixed(2)}%`;
+            }
+
+            // 스파크라인 (Plotly)
+            const hist = info.history || [];
+            if (hist.length >= 2) {
+                const xs = hist.map(r => r.date);
+                const ys = hist.map(r => r.value);
+                const latest_val = ys[ys.length - 1];
+                const first_val  = ys[0];
+                const lineColor  = latest_val > first_val ? '#fc8181' : '#63b3ed';
+
+                Plotly.newPlot(chartId, [{
+                    type: 'scatter', mode: 'lines',
+                    x: xs, y: ys,
+                    line: { color: lineColor, width: 2, shape: 'spline' },
+                    fill: 'tozeroy',
+                    fillcolor: latest_val > first_val
+                        ? 'rgba(252,129,129,0.08)' : 'rgba(99,179,237,0.08)',
+                    hovertemplate: '%{x}<br><b>%{y:.2f}</b><extra></extra>',
+                }], {
+                    margin:  { t: 0, b: 0, l: 0, r: 0 },
+                    paper_bgcolor: 'transparent',
+                    plot_bgcolor:  'transparent',
+                    xaxis: { visible: false, fixedrange: true },
+                    yaxis: { visible: false, fixedrange: true },
+                    showlegend: false,
+                    hovermode: 'x unified',
+                }, { displayModeBar: false, responsive: true });
+            }
+        }
+
+        renderVolCard(data.move,   'vol-move-val', 'vol-move-date', 'vol-move-change', 'vol-move-badge', 'vol-move-chart');
+        renderVolCard(data.hy_oas, 'vol-hy-val',   'vol-hy-date',   'vol-hy-change',   'vol-hy-badge',   'vol-hy-chart');
+
+        volatilityLoaded = true;
+    } catch(e) {
+        console.error('Volatility 데이터 로드 실패:', e);
+    }
+}
+
+// ── NY Fed 시계열 차트 (Fed Rate 탭) ─────────────────────────
+async function loadNyfedHistory() {
+    try {
+        const res  = await fetch('/nyfed/history');
+        const data = await res.json();
+
+        const effr = data.effr || [];
+        const sofr = data.sofr || [];
+
+        if (!effr.length && !sofr.length) return;
+
+        // SOFR 날짜→rate 맵 (정렬용)
+        const sofrMap = {};
+        sofr.forEach(r => { sofrMap[r.date] = r.rate; });
+
+        const effrDates  = effr.map(r => r.date);
+        const effrRates  = effr.map(r => r.rate);
+        const targetLow  = effr.map(r => r.target_low);
+        const targetHigh = effr.map(r => r.target_high);
+        const sofrRates  = effr.map(r => sofrMap[r.date] ?? null);
+
+        // Target Low — 먼저 그려서 fill='tonexty' 기준점
+        const traceTargetLow = {
+            x: effrDates,
+            y: targetLow,
+            type: 'scatter',
+            mode: 'lines',
+            name: 'Target Low',
+            line: { color: 'rgba(252,129,129,0.3)', width: 1, dash: 'dot' },
+            hovertemplate: '<b>%{x}</b><br>Target Low: %{y:.2f}%<extra></extra>',
+            showlegend: true,
+        };
+
+        // Target High — fill='tonexty'로 Target Low~High 음영
+        const traceTargetHigh = {
+            x: effrDates,
+            y: targetHigh,
+            type: 'scatter',
+            mode: 'lines',
+            name: 'Target High',
+            fill: 'tonexty',
+            fillcolor: 'rgba(252,129,129,0.10)',
+            line: { color: 'rgba(252,129,129,0.4)', width: 1, dash: 'dot' },
+            hovertemplate: '<b>%{x}</b><br>Target High: %{y:.2f}%<extra></extra>',
+            showlegend: true,
+        };
+
+        // SOFR
+        const traceSOFR = {
+            x: sofr.map(r => r.date),
+            y: sofr.map(r => r.rate),
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: 'SOFR',
+            line: { color: '#9ae6b4', width: 2.2, shape: 'spline' },
+            marker: { size: 3, color: '#9ae6b4' },
+            hovertemplate: '<b>%{x}</b><br>SOFR: %{y:.2f}%<extra></extra>',
+        };
+
+        // EFFR
+        const traceEFFR = {
+            x: effrDates,
+            y: effrRates,
+            type: 'scatter',
+            mode: 'lines+markers',
+            name: 'EFFR',
+            line: { color: '#63b3ed', width: 2.5, shape: 'spline' },
+            marker: { size: 3, color: '#63b3ed' },
+            hovertemplate: '<b>%{x}</b><br>EFFR: %{y:.2f}%<extra></extra>',
+        };
+
+        const layout = {
+            paper_bgcolor: '#1a1d2e',
+            plot_bgcolor:  '#1a1d2e',
+            font: { color: '#a0aec0', family: 'Segoe UI, Malgun Gothic, sans-serif', size: 12 },
+            xaxis: {
+                showgrid: false, zeroline: false,
+                tickfont: { color: '#4a5568', size: 11 }, tickangle: -30,
+            },
+            yaxis: {
+                showgrid: true, gridcolor: '#2d3748', zeroline: false,
+                tickfont: { color: '#a0aec0', size: 11 }, tickformat: '.2f',
+                ticksuffix: '%',
+            },
+            legend: {
+                x: 0.01, y: 0.99,
+                bgcolor: 'rgba(26,29,46,0.85)', bordercolor: '#2d3748', borderwidth: 1,
+                font: { color: '#a0aec0', size: 12 },
+                orientation: 'h',
+            },
+            margin: { l: 55, r: 30, t: 20, b: 50 },
+            hovermode: 'x unified',
+            showlegend: true,
+        };
+
+        Plotly.newPlot('fedrate-chart',
+            [traceTargetLow, traceTargetHigh, traceSOFR, traceEFFR],
+            layout,
+            { responsive: true, displayModeBar: false }
+        );
+
+        fedRateLoaded = true;
+    } catch(e) {
+        console.error('NY Fed 이력 차트 로드 실패:', e);
+    }
+}
+
+// ── JPY Swap 탭 로드 ─────────────────────────────────────────
+const JPY_PERIOD_LABELS = {
+    '1M':  '1개월 (1M)',
+    '3M':  '3개월 (3M)',
+    '3Y':  '3년 (3Y)',
+    '7Y':  '7년 (7Y)',
+    '10Y': '10년 (10Y)',
+};
+
+async function loadJpy() {
+    try {
+        // ── 1. 최신 데이터 카드 ──────────────────────────────────
+        const res = await fetch('/jpy');
+        const d   = await res.json();
+
+        // 상태 배너 (d.status는 {status, message, updated_at} 객체)
+        const statusBar = document.getElementById('jpy-status-bar');
+        const statusMsg = document.getElementById('jpy-status-msg');
+        if (d.status && d.status.status === 'retry') {
+            statusBar.style.display = 'flex';
+            statusMsg.textContent   = d.status.message || '데이터 확인 중 (Retry...)';
+        } else {
+            statusBar.style.display = 'none';
+        }
+
+        // Spot Rate 표시
+        const spotBar = document.getElementById('jpy-spot-bar');
+        const spotVal = document.getElementById('jpy-spot-val');
+        if (d.spot_rate) {
+            spotVal.textContent = parseFloat(d.spot_rate).toFixed(2) + ' JPY/USD';
+            spotBar.style.display = 'flex';
+        } else {
+            spotBar.style.display = 'none';
+        }
+
+        // 테이블 렌더링
+        const tbody = document.getElementById('jpy-tbody');
+        // API는 { "1M": {...}, "3M": {...} } 형태의 객체를 반환하므로 배열로 변환
+        const PERIOD_ORDER = ['1M', '3M', '3Y', '7Y', '10Y'];
+        const dataObj = d.data || {};
+        const dataArr = PERIOD_ORDER
+            .filter(p => dataObj[p])
+            .map(p => ({ period: p, ...dataObj[p] }));
+
+        if (dataArr.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;color:#4a5568;padding:20px;">
+                데이터가 없습니다. 잠시 후 다시 확인해 주세요.</td></tr>`;
+        } else {
+            tbody.innerHTML = dataArr.map(row => {
+                const bid    = parseFloat(row.bid);
+                const chgVal = parseFloat(row.change_val || 0);
+                const prevBid= bid - chgVal;
+                // % change = change / |이전 bid| × 100
+                const pct    = prevBid !== 0 ? (chgVal / Math.abs(prevBid)) * 100 : 0;
+
+                const chgCls  = chgVal > 0 ? 'jpy-change-pos' : chgVal < 0 ? 'jpy-change-neg' : 'jpy-change-zero';
+                const pctCls  = pct > 0 ? 'jpy-change-pos jpy-pct' : pct < 0 ? 'jpy-change-neg jpy-pct' : 'jpy-change-zero jpy-pct';
+                const chgSign = chgVal > 0 ? '+' : '';
+                const pctSign = pct > 0 ? '+' : '';
+                const label   = JPY_PERIOD_LABELS[row.period] || row.period;
+                const bidFmt  = bid.toFixed(2);
+                const chgFmt  = isNaN(chgVal) ? '—' : `${chgSign}${chgVal.toFixed(2)}`;
+                const pctFmt  = isNaN(pct)    ? '—' : `${pctSign}${pct.toFixed(3)}%`;
+                const ts      = row.fetched_at || '—';
+
+                // ▲▼ 아이콘 (Change에 적용)
+                const arrow = chgVal > 0
+                    ? '<span class="jpy-arrow-up">▲</span>'
+                    : chgVal < 0
+                        ? '<span class="jpy-arrow-down">▼</span>'
+                        : '';
+
+                // 연율화 비용
+                let yieldHtml;
+                if (row.annualized_yield == null) {
+                    yieldHtml = `<span class="jpy-yield-na">Spot 없음</span>`;
+                } else {
+                    const yv     = parseFloat(row.annualized_yield);
+                    const yCls   = yv < 0 ? 'jpy-yield-neg' : yv > 0 ? 'jpy-yield-pos' : 'jpy-yield-zero';
+                    const ySgn   = yv > 0 ? '+' : '';
+                    const yBadge = yv < 0
+                        ? `<span style="font-size:10px;color:#fc8181;margin-left:4px;">(프리미엄)</span>`
+                        : '';
+                    yieldHtml = `<span class="${yCls}">${ySgn}${yv.toFixed(2)}%</span>${yBadge}`;
+                }
+
+                return `<tr>
+                    <td><span class="jpy-period-badge">${label}</span></td>
+                    <td><span class="jpy-bid">${bidFmt}</span></td>
+                    <td><span class="${chgCls}">${arrow}${chgFmt}</span></td>
+                    <td><span class="${pctCls}">${pctFmt}</span></td>
+                    <td class="jpy-yield-cell">${yieldHtml}</td>
+                    <td style="font-size:12px;color:#4a5568;">${ts}</td>
+                </tr>`;
+            }).join('');
+        }
+
+        // Japan 30Y JGB 참조 패널 업데이트
+        const j30 = d.japan30y;
+        if (j30) {
+            const lastEl = document.getElementById('jpy-30y-last');
+            const chgEl  = document.getElementById('jpy-30y-chg');
+            const pctEl  = document.getElementById('jpy-30y-pct');
+            const tsEl   = document.getElementById('jpy-30y-ts');
+
+            if (j30.last != null) {
+                lastEl.textContent = parseFloat(j30.last).toFixed(3);
+                lastEl.style.color = '#90cdf4';
+
+                if (j30.chg != null) {
+                    const sign = j30.chg >= 0 ? '+' : '';
+                    const cls  = j30.chg > 0 ? '#fc8181' : j30.chg < 0 ? '#63b3ed' : '#718096';
+                    chgEl.innerHTML = `<span style="color:${cls}">${sign}${parseFloat(j30.chg).toFixed(3)}</span>`;
+                }
+                if (j30.chg_pct != null) {
+                    const sp  = j30.chg_pct >= 0 ? '+' : '';
+                    const cls = j30.chg_pct > 0 ? '#fc8181' : j30.chg_pct < 0 ? '#63b3ed' : '#718096';
+                    pctEl.innerHTML = `<span style="color:${cls}">(${sp}${parseFloat(j30.chg_pct).toFixed(2)}%)</span>`;
+                }
+                if (j30.updated_at) {
+                    tsEl.textContent = j30.updated_at.replace(' KST','');
+                }
+            } else {
+                lastEl.innerHTML = `<span style="color:#d4a017;font-size:12px;font-weight:600;">Source Check</span>`;
+                lastEl.style.color = '';
+            }
+        }
+
+        jpyLoaded = true;
+
+    } catch(e) {
+        console.error('[JPY] 데이터 로드 실패:', e);
+    }
+}
+
+// ── Portfolio 종합 상황판 ────────────────────────────────────
+let _ptfCache     = null;   // 클라이언트 캐시
+let _ptfCacheTime = 0;      // 캐시 저장 시각 (ms)
+const PTF_CACHE_TTL = 60000; // 1분 (ms)
+
+const PTF_CAT_LABELS = {
+    Energy: '⚡ Energy · 에너지',
+    Metals: '🪙 Metals · 원자재',
+    Rates:  '📊 Rates · 금리',
+    Equity: '📈 Equity · 주식',
+    FX:     '💱 FX · 외환',
+    Crypto: '₿ Crypto · 암호화폐',
+    CDS:    '🌏 CDS · 신용부도스왑',
+};
+
+function _fmtNum(val, unit) {
+    if (val == null) return '—';
+    const n = parseFloat(val);
+    if (isNaN(n)) return '—';
+    if (unit === 'KRW') return n.toFixed(0);
+    if (unit === 'USD' || unit === 'pts') return n.toLocaleString('en-US', {minimumFractionDigits:2, maximumFractionDigits:2});
+    return n.toFixed(4);
+}
+
+function _fmtChg(val, unit) {
+    if (val == null) return '<span class="ptf-na">—</span>';
+    const n = parseFloat(val);
+    if (isNaN(n)) return '<span class="ptf-na">—</span>';
+    const sign = n > 0 ? '+' : '';
+    const cls  = n > 0 ? 'ptf-chg-up' : n < 0 ? 'ptf-chg-down' : 'ptf-chg-zero';
+    const fmt  = unit === 'KRW' ? n.toFixed(0) : n.toFixed(4);
+    return `<span class="${cls}">${sign}${fmt}</span>`;
+}
+
+function _fmtPct(val) {
+    if (val == null) return '<span class="ptf-na">—</span>';
+    const n = parseFloat(val);
+    if (isNaN(n)) return '<span class="ptf-na">—</span>';
+    const sign = n > 0 ? '+' : '';
+    const abv  = Math.abs(n);
+    const isBig = abv >= 2;
+    const cls   = n > 0
+        ? (isBig ? 'ptf-pct-up ptf-big-up' : 'ptf-pct-up')
+        : n < 0
+            ? (isBig ? 'ptf-pct-down ptf-big-down' : 'ptf-pct-down')
+            : 'ptf-pct-zero';
+    const badge = isBig ? ' <span style="font-size:10px;">◆</span>' : '';
+    return `<span class="${cls}">${sign}${n.toFixed(2)}%${badge}</span>`;
+}
+
+function _rowClass(pct) {
+    if (pct == null) return '';
+    const n = parseFloat(pct);
+    if (isNaN(n)) return '';
+    if (n >= 2)  return 'ptf-row-big-up';
+    if (n > 0)   return 'ptf-row-up';
+    if (n <= -2) return 'ptf-row-big-down';
+    if (n < 0)   return 'ptf-row-down';
+    return '';
+}
+
+function _arrowIcon(pct) {
+    if (pct == null) return '';
+    const n = parseFloat(pct);
+    if (n > 0)  return `<span style="color:#fc8181;font-size:10px;">▲</span>`;
+    if (n < 0)  return `<span style="color:#63b3ed;font-size:10px;">▼</span>`;
+    return `<span style="color:#4a5568;font-size:10px;">─</span>`;
+}
+
+// ── 정렬 상태: 'none' → 'desc' → 'asc' → 'none' ─────────────
+let _ptfSortState = 'none';   // 현재 정렬 방향
+let _ptfRows      = null;     // 마지막으로 받은 원본 rows
+
+function _renderPortfolio(rows) {
+    _ptfRows = rows;  // 원본 보존
+    _applyPtfSort();
+}
+
+function _applyPtfSort() {
+    const tbody = document.getElementById('ptf-tbody');
+    if (!_ptfRows || _ptfRows.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:30px;color:#4a5568;">데이터 없음</td></tr>`;
+        return;
+    }
+
+    // 정렬 아이콘 + 헤더 스타일 갱신
+    const icon = document.getElementById('ptf-sort-icon');
+    const th   = document.getElementById('ptf-sort-th');
+    if (_ptfSortState === 'desc') {
+        icon.textContent = '▼'; icon.style.color = '#fc8181';
+        th.classList.add('sort-active');
+    } else if (_ptfSortState === 'asc') {
+        icon.textContent = '▲'; icon.style.color = '#63b3ed';
+        th.classList.add('sort-active');
+    } else {
+        icon.textContent = '⇅'; icon.style.color = '#4a6fa5';
+        th.classList.remove('sort-active');
+    }
+
+    // 사용할 rows 결정
+    let displayRows;
+    if (_ptfSortState === 'none') {
+        displayRows = [..._ptfRows];
+    } else {
+        // null pct 값은 맨 뒤로, 나머지는 정렬
+        const withPct    = _ptfRows.filter(r => r.chg_pct != null);
+        const withoutPct = _ptfRows.filter(r => r.chg_pct == null);
+        if (_ptfSortState === 'desc') {
+            withPct.sort((a, b) => b.chg_pct - a.chg_pct);
+        } else {
+            withPct.sort((a, b) => a.chg_pct - b.chg_pct);
+        }
+        displayRows = [...withPct, ...withoutPct];
+    }
+
+    let html = '';
+    let lastCat = null;
+    let rank = 0;
+    for (const row of displayRows) {
+        // 카테고리 헤더: 기본 모드에서만 표시
+        if (_ptfSortState === 'none') {
+            if (row.category !== lastCat) {
+                const catLabel = PTF_CAT_LABELS[row.category] || row.category;
+                html += `<tr class="ptf-cat-header"><td colspan="6">${catLabel}</td></tr>`;
+                lastCat = row.category;
+            }
+        }
+
+        rank++;
+        const rowCls   = _rowClass(row.chg_pct);
+        const arrow    = _arrowIcon(row.chg_pct);
+        const lastFmt  = (row.last == null)
+            ? `<span style="color:#d4a017;font-size:12px;font-weight:600;font-style:italic;">Source Check</span>`
+            : _fmtNum(row.last, row.unit);
+        const chgFmt   = _fmtChg(row.chg, row.unit);
+        const pctFmt   = _fmtPct(row.chg_pct);
+        const ts       = (row.updated_at || '').replace(' KST','');
+        const unitSpan = row.unit ? `<span class="ptf-unit">${row.unit}</span>` : '';
+        // 정렬 중에는 첫 번째 컬럼에 순위 표시
+        const firstCell = _ptfSortState !== 'none'
+            ? `<span class="ptf-sort-rank">${rank}</span>`
+            : arrow;
+
+        html += `<tr class="${rowCls}">
+            <td style="text-align:center;">${firstCell}</td>
+            <td><span class="ptf-name">${row.name}</span>${unitSpan}</td>
+            <td style="text-align:right;"><span class="ptf-last">${lastFmt}</span></td>
+            <td style="text-align:right;">${chgFmt}</td>
+            <td style="text-align:right;">${pctFmt}</td>
+            <td style="text-align:right;" class="ptf-ts">${ts}</td>
+        </tr>`;
+    }
+    tbody.innerHTML = html;
+}
+
+function togglePtfSort() {
+    // none → desc → asc → none 순환
+    if (_ptfSortState === 'none')       _ptfSortState = 'desc';
+    else if (_ptfSortState === 'desc')  _ptfSortState = 'asc';
+    else                                _ptfSortState = 'none';
+    _applyPtfSort();
+}
+
+async function loadPortfolio(forceRefresh = false) {
+    const now = Date.now();
+    const cacheValid = _ptfCache && (now - _ptfCacheTime) < PTF_CACHE_TTL;
+
+    if (cacheValid && !forceRefresh) {
+        // 클라이언트 캐시 사용
+        document.getElementById('ptf-loading').style.display = 'none';
+        document.getElementById('ptf-table-wrap').style.display = '';
+        return;
+    }
+
+    // 로딩 표시 (테이블이 비어있는 경우만)
+    const hasData = document.getElementById('ptf-tbody').innerHTML.trim() !== '';
+    if (!hasData) {
+        document.getElementById('ptf-loading').style.display = '';
+        document.getElementById('ptf-table-wrap').style.display = 'none';
+    }
+
+    try {
+        const res  = await fetch('/portfolio');
+        const data = await res.json();
+
+        if (data.rows && data.rows.length > 0) {
+            _ptfCache     = data;
+            _ptfCacheTime = Date.now();
+            _renderPortfolio(data.rows);
+
+            document.getElementById('ptf-loading').style.display = 'none';
+            document.getElementById('ptf-table-wrap').style.display = '';
+            document.getElementById('ptf-updated').textContent = '갱신: ' + (data.updated_at || '—');
+            document.getElementById('ptf-status-dot').style.background = '#68d391';
+        } else if (data.status === 'loading') {
+            document.getElementById('ptf-updated').textContent = '데이터 수집 중...';
+            document.getElementById('ptf-status-dot').style.background = '#f6ad55';
+            // 5초 후 재시도
+            setTimeout(() => loadPortfolio(true), 5000);
+        }
+    } catch(e) {
+        console.error('[Portfolio] 로드 실패:', e);
+        document.getElementById('ptf-status-dot').style.background = '#fc8181';
+    }
+}
+
+// ── 초기 로드 ────────────────────────────────────────────────
+// Portfolio가 기본 탭이므로 즉시 로드
+loadPortfolio(false);
+portfolioLoaded = true;
+// Credit/Fed Rate 공통 데이터 백그라운드 로드
+loadData();
+loadNyfed();
+setInterval(loadData,   60000);
+setInterval(loadNyfed, 300000);
+// Portfolio 자동 갱신 (1분마다)
+setInterval(() => {
+    const activeTab = ALL_TABS.find(t => {
+        const btn = document.getElementById('tab-btn-' + t);
+        return btn && btn.classList.contains('active');
+    });
+    if (activeTab === 'portfolio') loadPortfolio(false);
+}, 60000);
+
+// ── Admin 탭 ──────────────────────────────────────────────────
+{% if current_user.is_authenticated and current_user.is_admin() %}
+async function loadAdminUsers() {
+    const tbody = document.getElementById('admin-tbody');
+    if (!tbody) return;
+    tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#4a5568;padding:24px;">불러오는 중...</td></tr>';
+    try {
+        const res  = await fetch('/admin/users');
+        const data = await res.json();
+        document.getElementById('admin-total').textContent = data.total + '명';
+        if (!data.users || data.users.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#4a5568;padding:24px;">로그인 기록 없음</td></tr>';
+            return;
+        }
+        tbody.innerHTML = data.users.map((u, i) => `
+            <tr>
+                <td style="color:#718096;font-size:12px;">${i+1}</td>
+                <td>
+                    <div style="font-size:13px;color:#e2e8f0;">${u.name || '—'}</div>
+                    <div style="font-size:11px;color:#4a5568;">${u.email}</div>
+                </td>
+                <td style="font-size:12px;color:#90cdf4;">${u.last_login || '—'}</td>
+                <td style="font-size:12px;color:#718096;">${u.last_ip || '—'}</td>
+                <td style="text-align:right;font-size:13px;color:#f6ad55;font-weight:600;">${u.login_count}</td>
+            </tr>
+        `).join('');
+    } catch(e) {
+        tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:#fc8181;padding:24px;">데이터 로드 실패</td></tr>';
+    }
+}
+{% endif %}
+</script>
+
+<!-- ── Admin 탭 패널 ─────────────────────────────────────────── -->
+{% if current_user.is_authenticated and current_user.is_admin() %}
+<div id="pane-admin" style="display:none;">
+<main style="max-width:900px;">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:24px;flex-wrap:wrap;gap:12px;">
+        <div>
+            <div class="section-label" style="margin-bottom:4px;">관리자 패널</div>
+            <div style="font-size:12px;color:#4a5568;">로그인 사용자 통계 및 접속 기록</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+            <div style="font-size:12px;color:#718096;">총 사용자: <strong id="admin-total" style="color:#f6ad55;">—</strong></div>
+            <button onclick="loadAdminUsers()" style="
+                background:rgba(246,173,85,0.1);border:1px solid rgba(246,173,85,0.3);
+                color:#f6ad55;padding:5px 14px;border-radius:6px;font-size:12px;cursor:pointer;">
+                새로고침
+            </button>
+        </div>
+    </div>
+
+    <div style="background:#111827;border:1px solid #1e293b;border-radius:10px;overflow:hidden;">
+        <table style="width:100%;border-collapse:collapse;">
+            <thead>
+                <tr style="background:#0f172a;">
+                    <th style="padding:12px 16px;text-align:left;font-size:11px;color:#4a5568;font-weight:600;letter-spacing:1px;width:40px;">#</th>
+                    <th style="padding:12px 16px;text-align:left;font-size:11px;color:#4a5568;font-weight:600;letter-spacing:1px;">사용자</th>
+                    <th style="padding:12px 16px;text-align:left;font-size:11px;color:#4a5568;font-weight:600;letter-spacing:1px;">마지막 접속</th>
+                    <th style="padding:12px 16px;text-align:left;font-size:11px;color:#4a5568;font-weight:600;letter-spacing:1px;">접속 IP</th>
+                    <th style="padding:12px 16px;text-align:right;font-size:11px;color:#4a5568;font-weight:600;letter-spacing:1px;">로그인 횟수</th>
+                </tr>
+            </thead>
+            <tbody id="admin-tbody">
+                <tr>
+                    <td colspan="5" style="text-align:center;color:#4a5568;padding:40px;">
+                        Admin 탭을 열면 자동으로 로드됩니다
+                    </td>
+                </tr>
+            </tbody>
+        </table>
+    </div>
+
+    <!-- 관리자 정보 -->
+    <div style="margin-top:24px;padding:16px 20px;background:#0f172a;border:1px solid #1e293b;border-radius:8px;">
+        <div style="font-size:11px;color:#4a5568;margin-bottom:8px;letter-spacing:1px;text-transform:uppercase;">관리자 계정</div>
+        <div style="display:flex;align-items:center;gap:12px;">
+            {% if current_user.picture %}
+            <img src="{{ current_user.picture }}" alt="avatar"
+                 style="width:36px;height:36px;border-radius:50%;border:2px solid rgba(246,173,85,0.4);">
+            {% endif %}
+            <div>
+                <div style="font-size:14px;color:#e2e8f0;font-weight:600;">{{ current_user.name }}</div>
+                <div style="font-size:12px;color:#4a5568;">{{ current_user.email }}</div>
+            </div>
+            <div style="margin-left:auto;">
+                <span style="background:rgba(246,173,85,0.1);border:1px solid rgba(246,173,85,0.3);
+                             color:#f6ad55;font-size:11px;padding:3px 10px;border-radius:20px;">ADMIN</span>
+            </div>
+        </div>
+    </div>
+</main>
+</div>
+{% endif %}
+
+</body>
+</html>

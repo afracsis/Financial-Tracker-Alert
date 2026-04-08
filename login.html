@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SIGNALS</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: 'Segoe UI', 'Malgun Gothic', sans-serif;
+            background: #080b12;
+            color: #e2e8f0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+
+        /* 배경 그라디언트 효과 */
+        body::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background:
+                radial-gradient(ellipse 80% 60% at 50% 0%, rgba(66, 153, 225, 0.06) 0%, transparent 60%),
+                radial-gradient(ellipse 60% 40% at 80% 80%, rgba(99, 179, 237, 0.04) 0%, transparent 50%);
+            pointer-events: none;
+        }
+
+        .login-container {
+            text-align: center;
+            padding: 80px 60px;
+            position: relative;
+            z-index: 1;
+            max-width: 480px;
+            width: 100%;
+        }
+
+        /* SIGNALS 타이틀 */
+        .brand-title {
+            font-size: 68px;
+            font-weight: 900;
+            letter-spacing: 18px;
+            text-transform: uppercase;
+            background: linear-gradient(135deg, #e2e8f0 0%, #90cdf4 50%, #63b3ed 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+            margin-bottom: 10px;
+            line-height: 1;
+        }
+
+        .brand-subtitle {
+            font-size: 11px;
+            color: #4a5568;
+            letter-spacing: 5px;
+            text-transform: uppercase;
+            margin-bottom: 56px;
+        }
+
+        /* 구분선 */
+        .divider {
+            width: 48px;
+            height: 1px;
+            background: linear-gradient(90deg, transparent, #2d4a6e, transparent);
+            margin: 0 auto 52px;
+        }
+
+        /* Google 로그인 버튼 */
+        .google-btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 12px;
+            background: #ffffff;
+            color: #1a202c;
+            border: none;
+            border-radius: 8px;
+            padding: 14px 32px;
+            font-size: 15px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            transition: box-shadow 0.2s, transform 0.15s;
+            letter-spacing: 0.2px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        }
+
+        .google-btn:hover {
+            box-shadow: 0 4px 20px rgba(99, 179, 237, 0.2);
+            transform: translateY(-1px);
+        }
+
+        .google-btn:active {
+            transform: translateY(0);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+        }
+
+        .google-icon {
+            width: 20px;
+            height: 20px;
+            flex-shrink: 0;
+        }
+
+        /* 에러 메시지 */
+        .error-msg {
+            margin-top: 28px;
+            background: rgba(252, 129, 129, 0.08);
+            border: 1px solid rgba(252, 129, 129, 0.25);
+            border-radius: 8px;
+            padding: 14px 20px;
+            font-size: 13px;
+            color: #fc8181;
+            line-height: 1.5;
+        }
+
+        /* 하단 텍스트 */
+        .footer-text {
+            margin-top: 56px;
+            font-size: 10px;
+            color: #1e2533;
+            letter-spacing: 3px;
+            text-transform: uppercase;
+        }
+
+        /* 로딩 상태 */
+        .google-btn.loading {
+            pointer-events: none;
+            opacity: 0.75;
+        }
+    </style>
+</head>
+<body>
+<div class="login-container">
+    <div class="brand-title">SIGNALS</div>
+    <div class="brand-subtitle">Financial Intelligence Platform</div>
+    <div class="divider"></div>
+
+    <a href="/auth/google" class="google-btn" id="googleBtn"
+       onclick="
+           event.preventDefault();
+           this.classList.add('loading');
+           this.innerHTML='<span style=\'font-size:14px;\'>연결 중...</span>';
+           // Google OAuth는 iframe 내부에서 차단됨 → 가능한 최상위 창으로 이동
+           try {
+               // window.top이 same-origin이면 그쪽으로, 아니면 parent로 시도
+               if (window.top.location.href) { window.top.location.href = '/auth/google'; }
+           } catch(e) {
+               // cross-origin top → parent 시도 (Replit wrapper iframe은 same-origin)
+               try { window.parent.location.href = '/auth/google'; }
+               catch(e2) { window.location.href = '/auth/google'; }
+           }
+       ">
+        <svg class="google-icon" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg">
+            <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
+            <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z"/>
+            <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z"/>
+            <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.18 1.48-4.96 2.31-8.16 2.31-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z"/>
+            <path fill="none" d="M0 0h48v48H0z"/>
+        </svg>
+        Google로 로그인
+    </a>
+
+    {% if error %}
+    <div class="error-msg">⚠ {{ error }}</div>
+    {% endif %}
+
+    <div class="footer-text">Private Access Only</div>
+</div>
+</body>
+</html>
