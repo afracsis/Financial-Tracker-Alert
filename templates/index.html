@@ -704,13 +704,20 @@
             <div id="cp-card-change-badge"></div>
             <div class="card-date" id="cp-card-date">기준일 로딩 중...</div>
         </div>
-        <!-- AA CP 금리 (신규) -->
+        <!-- AA CP 금리 (수동 입력) -->
         <div class="card">
             <div class="card-accent" style="background:#68d391;"></div>
-            <div class="card-label">AA 비금융 CP 금리 30일 (RIFSPPAAOO3NB)</div>
+            <div class="card-label">AA 비금융 CP 금리 30일 <span style="font-size:10px;color:#68d391;">✎ 수동 입력</span></div>
             <div class="card-value loading" id="aa-card-current">—</div>
             <div id="aa-card-change-badge"></div>
-            <div class="card-date" id="aa-card-date">기준일 로딩 중...</div>
+            <div class="card-date" id="aa-card-date">입력 데이터 없음</div>
+            <!-- 수동 입력 폼 -->
+            <div id="aa-input-form" style="margin-top:10px;display:flex;gap:6px;align-items:center;flex-wrap:wrap;">
+                <input type="date" id="aa-input-date" style="background:#2d3748;border:1px solid #4a5568;color:#e2e8f0;border-radius:4px;padding:3px 6px;font-size:11px;" />
+                <input type="number" id="aa-input-value" step="0.0001" placeholder="금리 (%)" style="width:90px;background:#2d3748;border:1px solid #4a5568;color:#e2e8f0;border-radius:4px;padding:3px 6px;font-size:11px;" />
+                <button onclick="submitAaInput()" style="background:#68d391;color:#1a202c;border:none;border-radius:4px;padding:3px 8px;font-size:11px;cursor:pointer;font-weight:600;">입력</button>
+                <span id="aa-input-msg" style="font-size:10px;color:#68d391;"></span>
+            </div>
         </div>
         <!-- A2/P2 - AA 스프레드 (신규) -->
         <div class="card" id="spread-card">
@@ -1311,18 +1318,26 @@ async function loadData() {
                 `<span class="card-change-badge ${cpCls}">${cpSign}${cp.change_pct}% 전일 대비</span>`;
         }
 
-        // ── AA 카드 렌더링 ─────────────────────────────────────
+        // ── AA 카드 렌더링 (수동 입력) ─────────────────────────
         const aa = data.aa;
         if (aa && aa.current) {
             document.getElementById('aa-card-current').textContent = aa.current.value.toFixed(4);
             document.getElementById('aa-card-current').classList.remove('loading');
-            document.getElementById('aa-card-date').textContent = '기준일: ' + aa.current.date;
+            document.getElementById('aa-card-date').textContent = '마지막 입력: ' + aa.current.date;
+        } else {
+            document.getElementById('aa-card-current').classList.remove('loading');
+            document.getElementById('aa-card-current').textContent = '—';
         }
         if (aa && aa.change_pct !== null && aa.change_pct !== undefined) {
             const aaSign = aa.change_pct >= 0 ? '+' : '';
             const aaCls  = aa.change_pct > 0 ? 'up' : aa.change_pct < 0 ? 'down' : 'neutral';
             document.getElementById('aa-card-change-badge').innerHTML =
                 `<span class="card-change-badge ${aaCls}">${aaSign}${aa.change_pct}% 전일 대비</span>`;
+        }
+        // 입력 폼: 오늘 날짜 기본값 설정
+        const aaDateInput = document.getElementById('aa-input-date');
+        if (aaDateInput && !aaDateInput.value) {
+            aaDateInput.value = new Date().toISOString().slice(0, 10);
         }
 
         // ── 스프레드 카드 렌더링 ───────────────────────────────
@@ -1505,6 +1520,32 @@ function renderSpreadChart(spreadRecords, thresholdBp) {
         margin: { l: 55, r: 30, t: 20, b: 50 },
         hovermode: 'x unified', showlegend: true, bargap: 0.3
     }, { responsive: true, displayModeBar: false });
+}
+
+// ── AA 수동 입력 제출 ─────────────────────────────────────────
+async function submitAaInput() {
+    const date  = document.getElementById('aa-input-date').value.trim();
+    const value = document.getElementById('aa-input-value').value.trim();
+    const msg   = document.getElementById('aa-input-msg');
+    if (!date || !value) { msg.style.color='#fc8181'; msg.textContent='날짜와 금리를 입력하세요'; return; }
+    msg.style.color='#a0aec0'; msg.textContent='저장 중...';
+    try {
+        const res = await fetch('/aa-input', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date, value: parseFloat(value) }),
+        });
+        const json = await res.json();
+        if (res.ok && json.ok) {
+            msg.style.color='#68d391'; msg.textContent='✓ 저장됨';
+            document.getElementById('aa-input-value').value = '';
+            await loadData();  // 카드 및 차트 즉시 갱신
+        } else {
+            msg.style.color='#fc8181'; msg.textContent=json.error||'오류 발생';
+        }
+    } catch(e) {
+        msg.style.color='#fc8181'; msg.textContent='네트워크 오류';
+    }
 }
 
 // ── Data History 로드 ─────────────────────────────────────────

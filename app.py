@@ -106,17 +106,7 @@ INDICATORS = {
             "timezone": "Asia/Seoul",
         },
     },
-    "RIFSPPAAOO3NB": {
-        "name": "AA 비금융 CP 금리 (30일)",
-        "description": "30-Day AA Nonfinancial Commercial Paper Interest Rate",
-        "table": "aa_30d",
-        "color": "#68d391",   # 차트 색상 (초록)
-        "schedule": {
-            "hour": "7,22",   # KST 07:00 및 22:00
-            "minute": "0",
-            "timezone": "Asia/Seoul",
-        },
-    },
+    # AA 30D CP는 FRED API 미지원(HTTP 400) → 수동 입력 방식으로 관리 (aa_manual 테이블)
 }
 
 
@@ -307,6 +297,18 @@ def init_db():
     """)
     log.info("users 테이블 준비 완료")
 
+    # ── AA 30D CP 수동 입력 테이블 ───────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS aa_manual (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            date       TEXT    NOT NULL UNIQUE,
+            value      REAL    NOT NULL,
+            note       TEXT,
+            entered_at TEXT    NOT NULL
+        )
+    """)
+    log.info("aa_manual 테이블 준비 완료")
+
     conn.commit()
     conn.close()
 
@@ -415,9 +417,8 @@ def make_refresh_job(series_id: str, meta: dict):
     """
     # FRED series_id → telegram_alerts indicator_key 매핑
     _FRED_ALERT_KEYS = {
-        "BAMLH0A0HYM2":        "hy_index",
-        "RIFSPPNA2P2D30NB":    "cp_30d",
-        "RIFSPPAAOO3NB":       "aa_30d",
+        "BAMLH0A0HYM2":     "hy_index",
+        "RIFSPPNA2P2D30NB": "cp_30d",
     }
 
     def refresh_job():
@@ -1237,7 +1238,37 @@ def get_data():
     """HY OA Index, A2/P2 CP, AA CP, A2/P2-AA 스프레드를 반환합니다."""
     hy = _build_indicator_payload("BAMLH0A0HYM2")
     cp = _build_indicator_payload("RIFSPPNA2P2D30NB")
-    aa = _build_indicator_payload("RIFSPPAAOO3NB")
+
+    # AA: 수동 입력 테이블에서 조회 (FRED 미지원 — aa_manual 테이블 사용)
+    _aa_conn = get_db()
+    _aa_rows = _aa_conn.execute(
+        "SELECT date, value, entered_at FROM aa_manual ORDER BY date DESC LIMIT 60"
+    ).fetchall()
+    _aa_conn.close()
+    _aa_records  = [{"date": r["date"], "value": r["value"]} for r in _aa_rows]
+    _aa_current  = _aa_records[0] if _aa_records else None
+    _aa_previous = _aa_records[1] if len(_aa_records) > 1 else None
+    _aa_change = _aa_change_pct = None
+    if _aa_current and _aa_previous and _aa_previous["value"]:
+        _aa_change     = round(_aa_current["value"] - _aa_previous["value"], 4)
+        _aa_change_pct = round((_aa_change / _aa_previous["value"]) * 100, 2)
+    _aa_entered_at = _parse_fetched_at(_aa_rows[0]["entered_at"]) if _aa_rows else None
+    aa = {
+        "series_id":        "AA_MANUAL",
+        "indicator_name":   "AA 비금융 CP 금리 30일 (수동)",
+        "description":      "AA-rated Nonfinancial Commercial Paper 30-Day Rate (수동 입력)",
+        "color":            "#68d391",
+        "current":          _aa_current,
+        "previous":         _aa_previous,
+        "change":           _aa_change,
+        "change_pct":       _aa_change_pct,
+        "alert":            None,
+        "records":          list(reversed(_aa_records)),
+        "total_count":      len(_aa_records),
+        "observation_date": _aa_current["date"] if _aa_current else None,
+        "last_fetched_at":  _aa_entered_at,
+        "next_schedule":    "수동 입력",
+    }
 
     # ── A2/P2 - AA 스프레드 계산 (단위: bp) ─────────────────────
     spread_current_bp  = None
@@ -1294,6 +1325,36 @@ def get_data():
         # 공통
         "server_time_kst": now_kst_str(),
     })
+
+
+@app.route("/aa-input", methods=["POST"])
+def aa_input():
+    """AA 비금융 CP 금리 30일 수동 입력 엔드포인트."""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "로그인이 필요합니다."}), 401
+    body = request.get_json(silent=True) or {}
+    date_str  = body.get("date", "").strip()
+    value_str = str(body.get("value", "")).strip()
+    note      = body.get("note", "").strip()
+    if not date_str or not value_str:
+        return jsonify({"error": "date와 value 필드가 필요합니다."}), 400
+    try:
+        datetime.strptime(date_str, "%Y-%m-%d")
+    except ValueError:
+        return jsonify({"error": "날짜 형식이 잘못됐습니다 (YYYY-MM-DD)."}), 400
+    try:
+        value = float(value_str)
+    except ValueError:
+        return jsonify({"error": "value는 숫자여야 합니다."}), 400
+    conn = get_db()
+    conn.execute(
+        "INSERT OR REPLACE INTO aa_manual (date, value, note, entered_at) VALUES (?, ?, ?, ?)",
+        (date_str, value, note or None, now_kst_str()),
+    )
+    conn.commit()
+    conn.close()
+    log.info(f"[AA 수동] {date_str} = {value} (입력자: {getattr(current_user, 'email', 'unknown')})")
+    return jsonify({"ok": True, "date": date_str, "value": value})
 
 
 @app.route("/records")
