@@ -10,6 +10,7 @@ import os
 import json
 import sqlite3
 import logging
+import threading
 import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta, date as date_type
@@ -1760,7 +1761,8 @@ def get_jpy():
 
     # Japan 30Y JGB — 포트폴리오 캐시에서 추출
     japan30y = None
-    cached = _portfolio_cache.get("data")
+    with _portfolio_lock:
+        cached = _portfolio_cache.get("data")
     if cached:
         for r in cached.get("rows", []):
             if r.get("symbol") == "Japan 30Y JGB":
@@ -1803,6 +1805,7 @@ def get_jpy_history():
 # ── Portfolio 종합 시장 데이터 ────────────────────────────────────
 
 _portfolio_cache: dict = {"data": None, "updated_at": None}
+_portfolio_lock = threading.Lock()
 _PORTFOLIO_CACHE_TTL = 60  # 초 (1분)
 
 
@@ -1813,8 +1816,9 @@ def refresh_portfolio() -> None:
     log.info("[Portfolio] 갱신 시작")
     try:
         result = portfolio_scraper.fetch_all()
-        _portfolio_cache["data"]       = result
-        _portfolio_cache["updated_at"] = datetime.now(tz=KST)
+        with _portfolio_lock:
+            _portfolio_cache["data"]       = result
+            _portfolio_cache["updated_at"] = datetime.now(tz=KST)
         rows = result.get("rows", [])
         log.info(f"[Portfolio] 캐시 갱신 완료: {len(rows)}개 지표")
         telegram_alerts.record_success("portfolio")
@@ -1844,8 +1848,9 @@ def get_portfolio():
     - 캐시가 없거나 만료됐으면 실시간 fetch 후 반환
     """
     now = datetime.now(tz=KST)
-    cached = _portfolio_cache.get("data")
-    updated = _portfolio_cache.get("updated_at")
+    with _portfolio_lock:
+        cached = _portfolio_cache.get("data")
+        updated = _portfolio_cache.get("updated_at")
 
     cache_fresh = (
         cached is not None and
@@ -1854,11 +1859,9 @@ def get_portfolio():
     )
 
     if not cache_fresh:
-        # 캐시가 없거나 만료됨 — yfinance만 즉시 조회 (빠름)
-        import threading
-        if not cache_fresh:
-            log.info("[Portfolio] 캐시 미스 — 실시간 수집")
-            refresh_portfolio()
+        log.info("[Portfolio] 캐시 미스 — 실시간 수집")
+        refresh_portfolio()
+        with _portfolio_lock:
             cached = _portfolio_cache.get("data")
 
     if not cached:
@@ -1911,7 +1914,8 @@ def health():
             })
 
     portfolio_age_sec = None
-    ptf_updated = _portfolio_cache.get("updated_at")
+    with _portfolio_lock:
+        ptf_updated = _portfolio_cache.get("updated_at")
     if ptf_updated:
         portfolio_age_sec = int((datetime.now(tz=KST) - ptf_updated).total_seconds())
 
