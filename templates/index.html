@@ -1529,22 +1529,27 @@ async function submitAaInput() {
     const msg   = document.getElementById('aa-input-msg');
     if (!date || !value) { msg.style.color='#fc8181'; msg.textContent='날짜와 금리를 입력하세요'; return; }
     msg.style.color='#a0aec0'; msg.textContent='저장 중...';
+    let res;
     try {
-        const res = await fetch('/aa-input', {
+        res = await fetch('/aa-input', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ date, value: parseFloat(value) }),
         });
-        const json = await res.json();
-        if (res.ok && json.ok) {
-            msg.style.color='#68d391'; msg.textContent='✓ 저장됨';
-            document.getElementById('aa-input-value').value = '';
-            await loadData();  // 카드 및 차트 즉시 갱신
-        } else {
-            msg.style.color='#fc8181'; msg.textContent=json.error||'오류 발생';
-        }
     } catch(e) {
-        msg.style.color='#fc8181'; msg.textContent='네트워크 오류';
+        msg.style.color='#fc8181'; msg.textContent='연결 실패 — 앱 재시작 필요';
+        return;
+    }
+    // JSON 파싱 분리 — 서버가 HTML 에러 페이지를 반환할 경우 대비
+    let json = {};
+    try { json = await res.json(); } catch(_) {}
+    if (res.ok && json.ok) {
+        msg.style.color='#68d391'; msg.textContent='✓ 저장됨';
+        document.getElementById('aa-input-value').value = '';
+        await loadData();  // 카드 및 차트 즉시 갱신
+    } else {
+        msg.style.color='#fc8181';
+        msg.textContent = json.error || `오류 HTTP ${res.status}`;
     }
 }
 
