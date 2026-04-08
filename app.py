@@ -10,6 +10,7 @@ import os
 import json
 import sqlite3
 import logging
+import time
 import threading
 import urllib.request
 import urllib.parse
@@ -323,16 +324,25 @@ def fetch_fred_observations(series_id: str, limit: int = 10) -> list | None:
     })
     url = f"{FRED_API_BASE}?{params}"
 
-    try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-        observations = data.get("observations", [])
-        log.info(f"[{series_id}] FRED에서 {len(observations)}개 관측값 수신")
-        return observations
-    except Exception as e:
-        log.error(f"[{series_id}] FRED API 호출 실패: {e}")
-        return None
+    _max_retries = 3
+    _backoff = [2, 4, 8]  # 초 단위 대기 (지수 백오프)
+
+    for attempt in range(1, _max_retries + 1):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            observations = data.get("observations", [])
+            log.info(f"[{series_id}] FRED에서 {len(observations)}개 관측값 수신")
+            return observations
+        except Exception as e:
+            wait = _backoff[attempt - 1] if attempt <= len(_backoff) else 8
+            if attempt < _max_retries:
+                log.warning(f"[{series_id}] FRED API 시도 {attempt}/{_max_retries} 실패: {e} — {wait}초 후 재시도")
+                time.sleep(wait)
+            else:
+                log.error(f"[{series_id}] FRED API {_max_retries}회 모두 실패: {e}")
+                return None
 
 
 def upsert_observations(table: str, observations: list) -> int:
