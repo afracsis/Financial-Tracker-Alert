@@ -175,6 +175,23 @@
 
         @media (max-width: 600px) { .credit-cards { grid-template-columns: 1fr; } }
 
+        /* 스프레드 카드 경고 상태 */
+        #spread-card.spread-alert {
+            border-color: rgba(252, 129, 129, 0.5);
+            background: rgba(252, 129, 129, 0.05);
+        }
+        .spread-threshold-badge {
+            display: inline-block;
+            margin-top: 6px;
+            font-size: 11px;
+            font-weight: 600;
+            padding: 2px 8px;
+            border-radius: 20px;
+        }
+        .spread-threshold-badge.safe    { background: rgba(104,211,145,0.12); color: #68d391; }
+        .spread-threshold-badge.warning { background: rgba(246,173,85,0.12);  color: #f6ad55; }
+        .spread-threshold-badge.danger  { background: rgba(252,129,129,0.15); color: #fc8181; }
+
         /* ── 알람 배너 ──────────────────────────────────────────── */
         .alert-banner {
             background: #2d1d1d;
@@ -687,9 +704,25 @@
             <div id="cp-card-change-badge"></div>
             <div class="card-date" id="cp-card-date">기준일 로딩 중...</div>
         </div>
+        <!-- AA CP 금리 (신규) -->
+        <div class="card">
+            <div class="card-accent" style="background:#68d391;"></div>
+            <div class="card-label">AA 비금융 CP 금리 30일 (RIFSPPAAOO3NB)</div>
+            <div class="card-value loading" id="aa-card-current">—</div>
+            <div id="aa-card-change-badge"></div>
+            <div class="card-date" id="aa-card-date">기준일 로딩 중...</div>
+        </div>
+        <!-- A2/P2 - AA 스프레드 (신규) -->
+        <div class="card" id="spread-card">
+            <div class="card-accent" style="background:#fc8181;"></div>
+            <div class="card-label">A2/P2 − AA 스프레드 <span style="font-size:10px;color:#718096;">임계: 50bp</span></div>
+            <div class="card-value loading" id="spread-card-current">—</div>
+            <div id="spread-card-change-badge"></div>
+            <div class="card-date" id="spread-card-date">자동 계산값</div>
+        </div>
     </div>
 
-    <!-- 비교 차트 -->
+    <!-- 차트 1: HY OAS + A2/P2 기존 비교 차트 -->
     <div class="chart-section">
         <div class="chart-header">
             <div>
@@ -699,6 +732,28 @@
             <button class="refresh-btn" onclick="loadData()">새로고침</button>
         </div>
         <div id="chart"></div>
+    </div>
+
+    <!-- 차트 2: A2/P2 + AA 동시 표시 (신규) -->
+    <div class="chart-section">
+        <div class="chart-header">
+            <div>
+                <div class="chart-title">CP 금리 비교 (A2/P2 vs AA)</div>
+                <div class="chart-desc">두 금리의 갭이 클수록 신용 위험 프리미엄 상승</div>
+            </div>
+        </div>
+        <div id="chart-cp-rate"></div>
+    </div>
+
+    <!-- 차트 3: A2/P2 - AA 스프레드 (신규) -->
+    <div class="chart-section">
+        <div class="chart-header">
+            <div>
+                <div class="chart-title">A2/P2 − AA 스프레드 (bp)</div>
+                <div class="chart-desc">50bp 초과 시 자금시장 본격 스트레스 신호</div>
+            </div>
+        </div>
+        <div id="chart-spread"></div>
     </div>
 
 </main>
@@ -1256,7 +1311,55 @@ async function loadData() {
                 `<span class="card-change-badge ${cpCls}">${cpSign}${cp.change_pct}% 전일 대비</span>`;
         }
 
+        // ── AA 카드 렌더링 ─────────────────────────────────────
+        const aa = data.aa;
+        if (aa && aa.current) {
+            document.getElementById('aa-card-current').textContent = aa.current.value.toFixed(4);
+            document.getElementById('aa-card-current').classList.remove('loading');
+            document.getElementById('aa-card-date').textContent = '기준일: ' + aa.current.date;
+        }
+        if (aa && aa.change_pct !== null && aa.change_pct !== undefined) {
+            const aaSign = aa.change_pct >= 0 ? '+' : '';
+            const aaCls  = aa.change_pct > 0 ? 'up' : aa.change_pct < 0 ? 'down' : 'neutral';
+            document.getElementById('aa-card-change-badge').innerHTML =
+                `<span class="card-change-badge ${aaCls}">${aaSign}${aa.change_pct}% 전일 대비</span>`;
+        }
+
+        // ── 스프레드 카드 렌더링 ───────────────────────────────
+        const sp = data.spread;
+        if (sp && sp.current_bp !== null && sp.current_bp !== undefined) {
+            const spVal = sp.current_bp;
+            document.getElementById('spread-card-current').textContent = spVal.toFixed(1) + ' bp';
+            document.getElementById('spread-card-current').classList.remove('loading');
+
+            // 변화량 배지
+            if (sp.change_bp !== null && sp.change_bp !== undefined) {
+                const spSign = sp.change_bp >= 0 ? '+' : '';
+                const spCls  = sp.change_bp > 0 ? 'up' : sp.change_bp < 0 ? 'down' : 'neutral';
+                document.getElementById('spread-card-change-badge').innerHTML =
+                    `<span class="card-change-badge ${spCls}">${spSign}${sp.change_bp.toFixed(1)}bp 전일 대비</span>`;
+            }
+
+            // 임계값 배지 및 카드 경고 스타일
+            const spreadCard = document.getElementById('spread-card');
+            let threshBadge = '', threshCls = '';
+            if (spVal >= 50) {
+                threshCls = 'danger'; threshBadge = '⚠️ 50bp 임계 초과';
+                spreadCard.classList.add('spread-alert');
+            } else if (spVal >= 30) {
+                threshCls = 'warning'; threshBadge = '주의 (30~50bp)';
+                spreadCard.classList.remove('spread-alert');
+            } else {
+                threshCls = 'safe'; threshBadge = '정상 (< 30bp)';
+                spreadCard.classList.remove('spread-alert');
+            }
+            document.getElementById('spread-card-date').innerHTML =
+                `<span class="spread-threshold-badge ${threshCls}">${threshBadge}</span>`;
+        }
+
         renderChart(data.records, cp ? cp.records : []);
+        renderCpRateChart(cp ? cp.records : [], aa ? aa.records : []);
+        renderSpreadChart(sp ? sp.records : [], sp ? sp.threshold_bp : 50);
 
     } catch(e) {
         console.error('FRED 데이터 로드 실패:', e);
@@ -1317,6 +1420,90 @@ function renderChart(hyRecords, cpRecords) {
         margin: { l: 55, r: 65, t: 20, b: 50 },
         hovermode: 'x unified',
         showlegend: true
+    }, { responsive: true, displayModeBar: false });
+}
+
+// ── CP 금리 비교 차트 (A2/P2 + AA, 동일 y축) ──────────────────
+function renderCpRateChart(cpRecords, aaRecords) {
+    if ((!cpRecords || cpRecords.length === 0) && (!aaRecords || aaRecords.length === 0)) return;
+    const traces = [];
+    if (cpRecords && cpRecords.length > 0) {
+        traces.push({
+            x: cpRecords.map(r => r.date),
+            y: cpRecords.map(r => r.value),
+            type: 'scatter', mode: 'lines+markers',
+            name: 'A2/P2 (30일)',
+            line: { color: '#f6ad55', width: 2.5, shape: 'spline' },
+            marker: { size: 4, color: '#f6ad55' },
+            hovertemplate: '<b>%{x}</b><br>A2/P2: %{y:.4f}%<extra></extra>'
+        });
+    }
+    if (aaRecords && aaRecords.length > 0) {
+        traces.push({
+            x: aaRecords.map(r => r.date),
+            y: aaRecords.map(r => r.value),
+            type: 'scatter', mode: 'lines+markers',
+            name: 'AA (30일)',
+            line: { color: '#68d391', width: 2.5, shape: 'spline', dash: 'dot' },
+            marker: { size: 4, color: '#68d391' },
+            hovertemplate: '<b>%{x}</b><br>AA: %{y:.4f}%<extra></extra>'
+        });
+    }
+    Plotly.newPlot('chart-cp-rate', traces, {
+        paper_bgcolor: '#1a1d2e', plot_bgcolor: '#1a1d2e',
+        font: { color: '#a0aec0', family: 'Segoe UI, Malgun Gothic, sans-serif', size: 12 },
+        xaxis: { showgrid: false, zeroline: false, tickfont: { color: '#4a5568', size: 11 }, tickangle: -30 },
+        yaxis: {
+            title: { text: 'CP 금리 (%)', font: { color: '#a0aec0', size: 11 } },
+            showgrid: true, gridcolor: '#2d3748', zeroline: false,
+            tickfont: { color: '#a0aec0', size: 11 }, tickformat: '.2f'
+        },
+        legend: { x: 0.01, y: 0.99, bgcolor: 'rgba(26,29,46,0.8)', bordercolor: '#2d3748', borderwidth: 1, font: { color: '#a0aec0', size: 12 } },
+        margin: { l: 55, r: 30, t: 20, b: 50 },
+        hovermode: 'x unified', showlegend: true
+    }, { responsive: true, displayModeBar: false });
+}
+
+// ── A2/P2 - AA 스프레드 차트 (bp + 50bp 임계선) ───────────────
+function renderSpreadChart(spreadRecords, thresholdBp) {
+    if (!spreadRecords || spreadRecords.length === 0) return;
+    const threshold = thresholdBp || 50;
+    const dates  = spreadRecords.map(r => r.date);
+    const values = spreadRecords.map(r => r.value);
+
+    // 바 색상: 임계 초과 시 빨강, 이하 초록
+    const colors = values.map(v => v >= threshold ? 'rgba(252,129,129,0.7)' : 'rgba(104,211,145,0.6)');
+
+    const traceSpread = {
+        x: dates, y: values,
+        type: 'bar', name: 'A2/P2−AA 스프레드',
+        marker: { color: colors },
+        hovertemplate: '<b>%{x}</b><br>스프레드: %{y:.1f} bp<extra></extra>'
+    };
+
+    // 50bp 임계선
+    const traceThresh = {
+        x: [dates[dates.length - 1], dates[0]],
+        y: [threshold, threshold],
+        type: 'scatter', mode: 'lines',
+        name: `임계값 (${threshold}bp)`,
+        line: { color: '#fc8181', width: 1.5, dash: 'dash' },
+        hoverinfo: 'skip'
+    };
+
+    Plotly.newPlot('chart-spread', [traceSpread, traceThresh], {
+        paper_bgcolor: '#1a1d2e', plot_bgcolor: '#1a1d2e',
+        font: { color: '#a0aec0', family: 'Segoe UI, Malgun Gothic, sans-serif', size: 12 },
+        xaxis: { showgrid: false, zeroline: false, tickfont: { color: '#4a5568', size: 11 }, tickangle: -30 },
+        yaxis: {
+            title: { text: '스프레드 (bp)', font: { color: '#a0aec0', size: 11 } },
+            showgrid: true, gridcolor: '#2d3748', zeroline: true, zerolinecolor: '#4a5568',
+            tickfont: { color: '#a0aec0', size: 11 }, tickformat: '.1f',
+            rangemode: 'tozero'
+        },
+        legend: { x: 0.01, y: 0.99, bgcolor: 'rgba(26,29,46,0.8)', bordercolor: '#2d3748', borderwidth: 1, font: { color: '#a0aec0', size: 12 } },
+        margin: { l: 55, r: 30, t: 20, b: 50 },
+        hovermode: 'x unified', showlegend: true, bargap: 0.3
     }, { responsive: true, displayModeBar: false });
 }
 

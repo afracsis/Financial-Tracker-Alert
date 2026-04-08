@@ -106,6 +106,17 @@ INDICATORS = {
             "timezone": "Asia/Seoul",
         },
     },
+    "RIFSPPAAOO3NB": {
+        "name": "AA 비금융 CP 금리 (30일)",
+        "description": "30-Day AA Nonfinancial Commercial Paper Interest Rate",
+        "table": "aa_30d",
+        "color": "#68d391",   # 차트 색상 (초록)
+        "schedule": {
+            "hour": "7,22",   # KST 07:00 및 22:00
+            "minute": "0",
+            "timezone": "Asia/Seoul",
+        },
+    },
 }
 
 
@@ -406,6 +417,7 @@ def make_refresh_job(series_id: str, meta: dict):
     _FRED_ALERT_KEYS = {
         "BAMLH0A0HYM2":        "hy_index",
         "RIFSPPNA2P2D30NB":    "cp_30d",
+        "RIFSPPAAOO3NB":       "aa_30d",
     }
 
     def refresh_job():
@@ -1222,9 +1234,36 @@ def _build_indicator_payload(series_id: str) -> dict:
 
 @app.route("/data")
 def get_data():
-    """HY OA Index와 CP 금리 두 지표를 함께 반환합니다."""
+    """HY OA Index, A2/P2 CP, AA CP, A2/P2-AA 스프레드를 반환합니다."""
     hy = _build_indicator_payload("BAMLH0A0HYM2")
     cp = _build_indicator_payload("RIFSPPNA2P2D30NB")
+    aa = _build_indicator_payload("RIFSPPAAOO3NB")
+
+    # ── A2/P2 - AA 스프레드 계산 (단위: bp) ─────────────────────
+    spread_current_bp  = None
+    spread_change_bp   = None
+    spread_change_pct  = None
+    spread_records     = []
+    SPREAD_THRESHOLD   = 50  # bp
+
+    cp_recs = cp.get("records", []) if cp else []
+    aa_recs = aa.get("records", []) if aa else []
+
+    if cp_recs and aa_recs:
+        cp_dict = {r["date"]: r["value"] for r in cp_recs}
+        aa_dict = {r["date"]: r["value"] for r in aa_recs}
+        common  = sorted(set(cp_dict) & set(aa_dict), reverse=True)
+        spread_records = [
+            {"date": d, "value": round((cp_dict[d] - aa_dict[d]) * 100, 2)}
+            for d in common
+        ]
+        if spread_records:
+            spread_current_bp = spread_records[0]["value"]
+            if len(spread_records) >= 2:
+                prev_bp = spread_records[1]["value"]
+                spread_change_bp  = round(spread_current_bp - prev_bp, 2)
+                if prev_bp:
+                    spread_change_pct = round((spread_change_bp / abs(prev_bp)) * 100, 2)
 
     return jsonify({
         # 기존 HY 필드 (하위 호환)
@@ -1239,8 +1278,19 @@ def get_data():
         "last_fetched_at": hy["last_fetched_at"],
         "next_schedule": hy["next_schedule"],
         "indicator_name": hy["indicator_name"],
-        # 신규 CP 필드
+        # A2/P2 CP
         "cp": cp,
+        # AA CP (신규)
+        "aa": aa,
+        # A2/P2 - AA 스프레드 (신규)
+        "spread": {
+            "current_bp":   spread_current_bp,
+            "change_bp":    spread_change_bp,
+            "change_pct":   spread_change_pct,
+            "records":      spread_records,
+            "threshold_bp": SPREAD_THRESHOLD,
+            "alert":        spread_current_bp is not None and spread_current_bp > SPREAD_THRESHOLD,
+        },
         # 공통
         "server_time_kst": now_kst_str(),
     })
