@@ -746,6 +746,43 @@ async def _scrape_all_async() -> list[dict]:
             "status": "연결 시도 중",
         }
 
+        _empty_jgb10 = _make_empty_scraped(
+            "Japan 10Y JGB", "Japan 10Y JGB", "Rates", "%", "investing.com", _nowkst()
+        )
+        _empty_jgb30 = _make_empty_scraped(
+            "Japan 30Y JGB", "Japan 30Y JGB", "Rates", "%", "investing.com", _nowkst()
+        )
+
+        async def _jgb10_with_timeout():
+            try:
+                # goto 35s + wait_for_selector 15s + sleep 3s → 55초 개별 타임아웃
+                return await asyncio.wait_for(
+                    _scrape_investing_page(ctx_inv10, JAPAN_10Y_URL, "Japan 10Y JGB",
+                                           category="Rates", unit="%"),
+                    timeout=55,
+                )
+            except asyncio.TimeoutError:
+                log.error("[Playwright] Japan 10Y JGB: 55초 개별 타임아웃 — 빈 결과 반환")
+                return _empty_jgb10
+            except Exception as exc:
+                log.error(f"[Playwright] Japan 10Y JGB: 오류 — {exc}")
+                return _empty_jgb10
+
+        async def _jgb30_with_timeout():
+            try:
+                # goto 35s + wait_for_selector 15s + sleep 3s → 55초 개별 타임아웃
+                return await asyncio.wait_for(
+                    _scrape_investing_page(ctx_inv30, JAPAN_30Y_URL, "Japan 30Y JGB",
+                                           category="Rates", unit="%"),
+                    timeout=55,
+                )
+            except asyncio.TimeoutError:
+                log.error("[Playwright] Japan 30Y JGB: 55초 개별 타임아웃 — 빈 결과 반환")
+                return _empty_jgb30
+            except Exception as exc:
+                log.error(f"[Playwright] Japan 30Y JGB: 오류 — {exc}")
+                return _empty_jgb30
+
         async def _cds_with_timeout():
             try:
                 # WGB Playwright: 65초 goto + 8초 대기 → 85초 개별 타임아웃
@@ -759,10 +796,8 @@ async def _scrape_all_async() -> list[dict]:
 
         try:
             japan10_result, japan30_result, korea_result = await asyncio.gather(
-                _scrape_investing_page(ctx_inv10, JAPAN_10Y_URL, "Japan 10Y JGB",
-                                       category="Rates", unit="%"),
-                _scrape_investing_page(ctx_inv30, JAPAN_30Y_URL, "Japan 30Y JGB",
-                                       category="Rates", unit="%"),
+                _jgb10_with_timeout(),
+                _jgb30_with_timeout(),
                 _cds_with_timeout(),
             )
             return [japan10_result, japan30_result, korea_result]
