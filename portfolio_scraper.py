@@ -802,6 +802,12 @@ async def _scrape_all_async() -> list[dict]:
             )
             return [japan10_result, japan30_result, korea_result]
         finally:
+            # 컨텍스트 먼저 명시적 종료 후 브라우저 종료 (메모리 누수 방지)
+            for _ctx in [ctx_inv10, ctx_inv30, ctx_wgb]:
+                try:
+                    await _ctx.close()
+                except Exception:
+                    pass
             await browser_jgb.close()
             await browser_wgb.close()
 

@@ -806,13 +806,14 @@ def start_scheduler() -> BackgroundScheduler:
     )
     log.info("[JPY] 스케줄 등록: 매 1시간")
 
-    # Portfolio 종합 시장 데이터: 매 5분마다 갱신
+    # Portfolio 종합 시장 데이터: 매 15분마다 갱신
+    # (Playwright Chromium 메모리 누적 방지 — 5분 → 15분)
     scheduler.add_job(
         refresh_portfolio,
-        trigger=IntervalTrigger(minutes=5, timezone=KST),
+        trigger=IntervalTrigger(minutes=15, timezone=KST),
         id="refresh_portfolio",
     )
-    log.info("[Portfolio] 스케줄 등록: 매 5분")
+    log.info("[Portfolio] 스케줄 등록: 매 15분")
 
     # TMRS Signal Desk: 매일 08:00 KST 정기 계산
     scheduler.add_job(
