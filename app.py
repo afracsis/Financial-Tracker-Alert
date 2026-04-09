@@ -2280,7 +2280,7 @@ def get_jpy_history():
 
 _portfolio_cache: dict = {"data": None, "updated_at": None}
 _portfolio_lock = threading.Lock()
-_PORTFOLIO_CACHE_TTL = 60  # 초 (1분)
+_PORTFOLIO_CACHE_TTL = 900  # 초 (15분) — 스케줄 주기와 일치시켜 Playwright 중복 실행 방지
 _portfolio_refreshing = threading.Event()  # Playwright 이중 실행 방지
 
 
