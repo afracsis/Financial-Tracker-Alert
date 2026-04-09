@@ -548,7 +548,7 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
             _result: list = []
 
             def _yf_fetch():
-                hist = yf.Ticker("^VIX").history(period="2d", interval="5m")
+                hist = yf.Ticker("^VIX").history(period="5d", interval="1d")
                 if not hist.empty:
                     _result.append((round(float(hist["Close"].iloc[-1]), 2), "VIX 현물"))
 
