@@ -477,12 +477,13 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
         )
 
     # 1-c. RRP 잔고 (B$, 낮을수록 위험) — cap 4pt
+    # 2025년 기준 QT로 인한 구조적 소진 반영: 임계값 하향 조정
     rrp = conn.execute("SELECT total_amt_billions FROM nyfed_rrp ORDER BY date DESC LIMIT 1").fetchone()
     if rrp and rrp["total_amt_billions"] is not None:
         v = rrp["total_amt_billions"]
         inds["rrp"] = dict(
             name="RRP 잔고", layer=1, cap=4, value=v, unit="B$",
-            tier=_tier(-v, [(-300,"normal"), (-100,"watch"), (-50,"stress"), (None,"crisis")]),
+            tier=_tier(-v, [(-100,"normal"), (-50,"watch"), (-10,"stress"), (None,"crisis")]),
         )
 
     # ── Layer 2: 신용시장 (Credit) — 30pt 상한 ────────────────────
