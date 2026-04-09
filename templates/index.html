@@ -532,12 +532,14 @@
 
 <!-- 탭 네비게이션 -->
 <div class="tab-nav">
-    <button class="tab-btn active" id="tab-btn-portfolio" onclick="switchTab('portfolio')">Portfolio</button>
+    <button class="tab-btn active" id="tab-btn-signal"    onclick="switchTab('signal');loadSignalDesk();" style="color:#68d391;border-color:rgba(104,211,145,0.4);">⚡ Signal Desk</button>
+    <button class="tab-btn"        id="tab-btn-portfolio" onclick="switchTab('portfolio')">Portfolio</button>
     <button class="tab-btn"        id="tab-btn-fedrate"   onclick="switchTab('fedrate')">Fed Rate</button>
     <button class="tab-btn"        id="tab-btn-jpy"       onclick="switchTab('jpy')">JPY Swap</button>
     <button class="tab-btn"        id="tab-btn-credit"    onclick="switchTab('credit')">Credit</button>
     <button class="tab-btn"        id="tab-btn-fedop"     onclick="switchTab('fedop')">Fed Operation</button>
     <button class="tab-btn"        id="tab-btn-volatility" onclick="switchTab('volatility');loadVolatility();">Volatility</button>
+    <button class="tab-btn"        id="tab-btn-ers"       onclick="switchTab('ers')">ERS</button>
     <button class="tab-btn"        id="tab-btn-history"   onclick="switchTab('history')">Data History</button>
     {% if current_user.is_authenticated and current_user.is_admin() %}
     <button class="tab-btn" id="tab-btn-admin" onclick="switchTab('admin');loadAdminUsers();"
@@ -545,8 +547,113 @@
     {% endif %}
 </div>
 
+<!-- ── Signal Desk 탭 ──────────────────────────────────────────── -->
+<div id="pane-signal">
+<main>
+
+<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+    <div>
+        <div style="font-size:20px;font-weight:700;color:#e2e8f0;letter-spacing:1px;">⚡ SIGNAL DESK</div>
+        <div style="font-size:11px;color:#718096;margin-top:3px;">TW Macro Risk Score (TMRS) — Funding → Credit → Equity</div>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;">
+        <div style="font-size:11px;color:#718096;" id="sd-updated">계산 중...</div>
+        <button onclick="recalculateTmrs()" style="background:#2d3748;border:1px solid #4a5568;color:#a0aec0;border-radius:6px;padding:5px 12px;font-size:11px;cursor:pointer;">↻ 재계산</button>
+    </div>
+</div>
+
+<!-- ── 메인 스코어 카드 ─────────────────────────────────────── -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:20px;">
+
+    <!-- TMRS 카드 -->
+    <div style="background:#1a1d2e;border:1px solid #2d3748;border-radius:12px;padding:24px;">
+        <div style="font-size:12px;color:#718096;margin-bottom:8px;letter-spacing:1px;">TMRS SCORE</div>
+        <div style="display:flex;align-items:baseline;gap:10px;">
+            <div id="sd-score" style="font-size:52px;font-weight:700;color:#e2e8f0;line-height:1;">—</div>
+            <div style="font-size:18px;color:#4a5568;">/100</div>
+            <div id="sd-tier-badge" style="margin-left:8px;padding:4px 12px;border-radius:20px;font-size:13px;font-weight:600;">—</div>
+        </div>
+        <!-- Layer 바 -->
+        <div style="margin-top:20px;display:flex;flex-direction:column;gap:8px;">
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div style="width:80px;font-size:11px;color:#718096;">Layer 1</div>
+                <div style="flex:1;background:#2d3748;border-radius:4px;height:8px;overflow:hidden;">
+                    <div id="sd-bar-l1" style="height:100%;background:#4299e1;width:0%;transition:width 0.6s;border-radius:4px;"></div>
+                </div>
+                <div id="sd-val-l1" style="width:52px;text-align:right;font-size:11px;color:#a0aec0;">—/45</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div style="width:80px;font-size:11px;color:#718096;">Layer 2</div>
+                <div style="flex:1;background:#2d3748;border-radius:4px;height:8px;overflow:hidden;">
+                    <div id="sd-bar-l2" style="height:100%;background:#f6ad55;width:0%;transition:width 0.6s;border-radius:4px;"></div>
+                </div>
+                <div id="sd-val-l2" style="width:52px;text-align:right;font-size:11px;color:#a0aec0;">—/30</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div style="width:80px;font-size:11px;color:#718096;">Layer 3</div>
+                <div style="flex:1;background:#2d3748;border-radius:4px;height:8px;overflow:hidden;">
+                    <div id="sd-bar-l3" style="height:100%;background:#fc8181;width:0%;transition:width 0.6s;border-radius:4px;"></div>
+                </div>
+                <div id="sd-val-l3" style="width:52px;text-align:right;font-size:11px;color:#a0aec0;">—/15</div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;">
+                <div style="width:80px;font-size:11px;color:#718096;">Divergence</div>
+                <div style="flex:1;background:#2d3748;border-radius:4px;height:8px;overflow:hidden;">
+                    <div id="sd-bar-div" style="height:100%;background:#9f7aea;width:0%;transition:width 0.6s;border-radius:4px;"></div>
+                </div>
+                <div id="sd-val-div" style="width:52px;text-align:right;font-size:11px;color:#a0aec0;">—/10</div>
+            </div>
+        </div>
+    </div>
+
+    <!-- 알람 + 지표 현황 카드 -->
+    <div style="background:#1a1d2e;border:1px solid #2d3748;border-radius:12px;padding:24px;">
+        <!-- Inverse Turkey -->
+        <div id="sd-inv-turkey" style="border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:12px;background:#2d3748;color:#718096;">
+            🦃 Inverse Turkey: 미감지
+        </div>
+        <!-- 지표 현황 -->
+        <div style="font-size:11px;color:#718096;margin-bottom:10px;letter-spacing:1px;">INDICATOR STATUS</div>
+        <div id="sd-indicators" style="display:flex;flex-direction:column;gap:7px;">
+            <div style="color:#4a5568;font-size:11px;">데이터 로딩 중...</div>
+        </div>
+    </div>
+</div>
+
+<!-- ── 해석 텍스트 ───────────────────────────────────────────── -->
+<div id="sd-interpretation" style="background:#1a1d2e;border:1px solid #2d3748;border-radius:12px;padding:20px;margin-bottom:20px;font-size:13px;color:#cbd5e0;line-height:1.7;">
+    Signal Desk 데이터를 불러오는 중입니다...
+</div>
+
+<!-- ── TMRS 이력 차트 ────────────────────────────────────────── -->
+<div class="chart-section">
+    <div class="chart-header">
+        <div>
+            <div class="chart-title">TMRS 점수 추이</div>
+            <div class="chart-desc">최근 30일 TMRS 점수 변화 (Tier 기준선 포함)</div>
+        </div>
+    </div>
+    <div id="chart-tmrs"></div>
+</div>
+
+</main>
+</div>
+
+<!-- ── ERS 탭 (이벤트 리스크 스코어) ───────────────────────────── -->
+<div id="pane-ers" style="display:none;">
+<main>
+<div style="font-size:20px;font-weight:700;color:#e2e8f0;margin-bottom:8px;">📅 Event Risk Score (ERS)</div>
+<div style="font-size:13px;color:#718096;margin-bottom:24px;">이벤트 기반 리스크 평가 — 예정 이벤트 · 지정학 · 뉴스플로우</div>
+<div style="background:#1a1d2e;border:1px solid #2d3748;border-radius:12px;padding:32px;text-align:center;color:#4a5568;">
+    <div style="font-size:32px;margin-bottom:12px;">🚧</div>
+    <div style="font-size:14px;color:#718096;">ERS 모듈 준비 중입니다.</div>
+    <div style="font-size:12px;color:#4a5568;margin-top:8px;">수동 입력 + RSS 자동 스크래핑 방식으로 구현 예정</div>
+</div>
+</main>
+</div>
+
 <!-- ── Portfolio 탭 (종합 시장 상황판) ──────────────────────────── -->
-<div id="pane-portfolio">
+<div id="pane-portfolio" style="display:none;">
 <main>
 
 <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:18px; flex-wrap:wrap; gap:10px;">
@@ -1229,7 +1336,7 @@ function toggleAccordion(id) {
 }
 
 // ── 탭 전환 ──────────────────────────────────────────────────
-const ALL_TABS = ['portfolio', 'fedrate', 'jpy', 'credit', 'fedop', 'volatility', 'history'{% if current_user.is_authenticated and current_user.is_admin() %}, 'admin'{% endif %}];
+const ALL_TABS = ['signal', 'portfolio', 'fedrate', 'jpy', 'credit', 'fedop', 'volatility', 'ers', 'history'{% if current_user.is_authenticated and current_user.is_admin() %}, 'admin'{% endif %}];
 let historyLoaded     = false;
 let fedRateLoaded     = false;
 let fedOpLoaded       = false;
@@ -1520,6 +1627,157 @@ function renderSpreadChart(spreadRecords, thresholdBp) {
         margin: { l: 55, r: 30, t: 20, b: 50 },
         hovermode: 'x unified', showlegend: true, bargap: 0.3
     }, { responsive: true, displayModeBar: false });
+}
+
+// ── Signal Desk (TMRS) ───────────────────────────────────────
+let signalDeskLoaded = false;
+
+async function loadSignalDesk() {
+    try {
+        const res  = await fetch('/signal-desk');
+        const data = await res.json();
+        renderSignalDesk(data);
+        signalDeskLoaded = true;
+    } catch(e) {
+        document.getElementById('sd-interpretation').textContent = '데이터 로드 실패: ' + e.message;
+    }
+}
+
+function renderSignalDesk(data) {
+    if (!data || data.total_score === null) {
+        document.getElementById('sd-interpretation').textContent =
+            '아직 TMRS 데이터가 없습니다. 지표 업데이트 후 자동 계산됩니다.';
+        return;
+    }
+
+    const TIER_COLOR  = { normal:'#68d391', watch:'#f6ad55', stress:'#fc8181', crisis:'#9b2c2c' };
+    const TIER_KO     = { normal:'정상', watch:'주의', stress:'스트레스', crisis:'위기' };
+
+    // 점수 & 티어
+    document.getElementById('sd-score').textContent = data.total_score.toFixed(1);
+    const badge = document.getElementById('sd-tier-badge');
+    badge.textContent = TIER_KO[data.total_tier] || data.total_tier;
+    badge.style.background = (TIER_COLOR[data.total_tier] || '#4a5568') + '33';
+    badge.style.color = TIER_COLOR[data.total_tier] || '#a0aec0';
+    badge.style.border = '1px solid ' + (TIER_COLOR[data.total_tier] || '#4a5568') + '66';
+
+    // Layer 바
+    const setBar = (id, val, max) => {
+        const pct = max > 0 ? Math.min(val / max * 100, 100) : 0;
+        document.getElementById('sd-bar-' + id).style.width = pct + '%';
+        document.getElementById('sd-val-' + id).textContent = val.toFixed(1) + '/' + max;
+    };
+    setBar('l1',  data.l1_score,  45);
+    setBar('l2',  data.l2_score,  30);
+    setBar('l3',  data.l3_score,  15);
+    setBar('div', data.div_score, 10);
+
+    // Inverse Turkey
+    const itEl = document.getElementById('sd-inv-turkey');
+    if (data.inverse_turkey) {
+        itEl.style.background = '#7b341e33';
+        itEl.style.color      = '#fc8181';
+        itEl.style.border     = '1px solid #fc818166';
+        itEl.textContent      = '⚠️ Inverse Turkey 패턴 감지 — 주식시장 미반응, 자금·신용 스트레스 누적 중';
+    } else {
+        itEl.style.background = '#2d3748';
+        itEl.style.color      = '#718096';
+        itEl.style.border     = 'none';
+        itEl.textContent      = '🦃 Inverse Turkey: 미감지';
+    }
+
+    // 지표 현황 도트
+    const LAYER_NAME = { 1:'L1', 2:'L2', 3:'L3' };
+    const snap = data.snapshot || {};
+    const tiers = data.indicator_tiers || {};
+    const IND_NAMES = {
+        sofr_effr:    'SOFR-EFFR 스프레드',
+        cp_aa_spread: 'CP 스프레드 (A2/P2−AA)',
+        rrp:          'RRP 잔고',
+        hy_oas:       'HY OAS',
+        cp_effr:      'A2/P2 CP−EFFR',
+        move:         'MOVE Index',
+    };
+    const indEl = document.getElementById('sd-indicators');
+    if (Object.keys(tiers).length === 0) {
+        indEl.innerHTML = '<div style="color:#4a5568;font-size:11px;">지표 데이터 없음</div>';
+    } else {
+        indEl.innerHTML = Object.entries(tiers).map(([k, tier]) => {
+            const color = TIER_COLOR[tier] || '#4a5568';
+            const val   = snap[k] ? snap[k].value : '';
+            const name  = IND_NAMES[k] || k;
+            return `<div style="display:flex;align-items:center;gap:8px;">
+                <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;flex-shrink:0;"></span>
+                <span style="font-size:11px;color:#a0aec0;flex:1;">${name}</span>
+                <span style="font-size:11px;color:#718096;">${val !== '' ? Number(val).toFixed(2) : '—'}</span>
+                <span style="font-size:10px;color:${color};width:44px;text-align:right;">${TIER_KO[tier]||tier}</span>
+            </div>`;
+        }).join('');
+    }
+
+    // 해석 텍스트
+    document.getElementById('sd-interpretation').textContent = data.interpretation || '';
+
+    // 업데이트 시각
+    document.getElementById('sd-updated').textContent = '마지막 계산: ' + (data.calculated_at || '—');
+
+    // TMRS 이력 차트
+    if (data.history && data.history.length > 0) {
+        renderTmrsChart(data.history);
+    }
+}
+
+function renderTmrsChart(history) {
+    const sorted = [...history].reverse();
+    const dates  = sorted.map(r => r.calculated_at ? r.calculated_at.slice(0,16) : '');
+    const scores = sorted.map(r => r.total_score);
+    const colors = sorted.map(r => {
+        const m = { normal:'#68d391', watch:'#f6ad55', stress:'#fc8181', crisis:'#9b2c2c' };
+        return m[r.total_tier] || '#4299e1';
+    });
+    Plotly.newPlot('chart-tmrs', [{
+        x: dates, y: scores, type: 'scatter', mode: 'lines+markers',
+        line:   { color: '#4299e1', width: 2 },
+        marker: { color: colors, size: 7 },
+        name: 'TMRS',
+        hovertemplate: '%{x}<br>TMRS: %{y:.1f}점<extra></extra>',
+    }, {
+        x: [dates[0], dates[dates.length-1]], y: [20, 20],
+        type: 'scatter', mode: 'lines', line: { color:'#68d391', dash:'dot', width:1 },
+        name: 'Normal/Watch', hoverinfo: 'skip',
+    }, {
+        x: [dates[0], dates[dates.length-1]], y: [40, 40],
+        type: 'scatter', mode: 'lines', line: { color:'#f6ad55', dash:'dot', width:1 },
+        name: 'Watch/Stress', hoverinfo: 'skip',
+    }, {
+        x: [dates[0], dates[dates.length-1]], y: [65, 65],
+        type: 'scatter', mode: 'lines', line: { color:'#fc8181', dash:'dot', width:1 },
+        name: 'Stress/Crisis', hoverinfo: 'skip',
+    }], {
+        paper_bgcolor: '#1a1d2e', plot_bgcolor: '#1a1d2e',
+        xaxis: { showgrid:true, gridcolor:'#2d3748', tickfont:{color:'#a0aec0',size:10} },
+        yaxis: { showgrid:true, gridcolor:'#2d3748', range:[0,100], tickfont:{color:'#a0aec0',size:11}, title:{text:'TMRS', font:{color:'#718096'}} },
+        margin: { l:50, r:20, t:20, b:50 },
+        showlegend: false, hovermode: 'x unified',
+    }, { responsive:true, displayModeBar:false });
+}
+
+async function recalculateTmrs() {
+    const btn = event.target;
+    btn.textContent = '계산 중...'; btn.disabled = true;
+    try {
+        const res  = await fetch('/signal-desk/recalculate', { method:'POST' });
+        const json = await res.json();
+        if (json.ok) {
+            await loadSignalDesk();
+            btn.textContent = '✓ 완료';
+        } else {
+            btn.textContent = json.error || '오류';
+        }
+    } catch(e) {
+        btn.textContent = '실패';
+    }
+    setTimeout(() => { btn.textContent = '↻ 재계산'; btn.disabled = false; }, 2000);
 }
 
 // ── AA 수동 입력 제출 ─────────────────────────────────────────
@@ -2450,10 +2708,11 @@ async function loadPortfolio(forceRefresh = false) {
 }
 
 // ── 초기 로드 ────────────────────────────────────────────────
-// Portfolio가 기본 탭이므로 즉시 로드
+// Signal Desk가 첫 번째 탭 → 즉시 로드
+loadSignalDesk();
+// Portfolio / Credit / FedRate 백그라운드 로드
 loadPortfolio(false);
 portfolioLoaded = true;
-// Credit/Fed Rate 공통 데이터 백그라운드 로드
 loadData();
 loadNyfed();
 setInterval(loadData,   60000);

@@ -309,6 +309,26 @@ def init_db():
     """)
     log.info("aa_manual 테이블 준비 완료")
 
+    # ── TMRS 점수 이력 테이블 ─────────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS tmrs_scores (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            calculated_at  TEXT    NOT NULL,
+            trigger        TEXT    NOT NULL,
+            total_score    REAL    NOT NULL,
+            total_tier     TEXT    NOT NULL,
+            l1_score       REAL,
+            l2_score       REAL,
+            l3_score       REAL,
+            div_score      REAL,
+            indicator_tiers TEXT,
+            inverse_turkey INTEGER DEFAULT 0,
+            interpretation TEXT,
+            snapshot       TEXT
+        )
+    """)
+    log.info("tmrs_scores 테이블 준비 완료")
+
     conn.commit()
     conn.close()
 
@@ -407,6 +427,213 @@ def now_kst_str() -> str:
     return now_kst().strftime("%Y-%m-%d %H:%M:%S KST")
 
 
+# ════════════════════════════════════════════════════════════════
+# TMRS (TW Macro Risk Score) 엔진 — v1
+# Layer 1(자금 45pt) + Layer 2(신용 30pt) + Layer 3(주식 15pt) + Divergence(10pt)
+# ════════════════════════════════════════════════════════════════
+
+_TIER_SCORE = {"normal": 0.00, "watch": 0.40, "stress": 0.75, "crisis": 1.00}
+_TIER_META  = {
+    "normal": {"ko": "정상",     "color": "#68d391", "emoji": "🟢"},
+    "watch":  {"ko": "주의",     "color": "#f6ad55", "emoji": "🟡"},
+    "stress": {"ko": "스트레스", "color": "#fc8181", "emoji": "🔴"},
+    "crisis": {"ko": "위기",     "color": "#9b2c2c", "emoji": "🚨"},
+}
+
+
+def _tier(value: float, bounds: list) -> str:
+    """bounds: [(upper_exclusive, tier), ..., (None, 'crisis')] 낮은 위험 → 높은 위험 순"""
+    for upper, t in bounds:
+        if upper is None or value < upper:
+            return t
+    return bounds[-1][1]
+
+
+def _compute_tmrs(trigger: str = "manual") -> dict:
+    """TMRS 점수를 계산하고 DB에 저장한 뒤 결과 dict를 반환합니다."""
+    conn = get_db()
+    inds: dict = {}
+
+    # ── Layer 1: 자금시장 (Deep) — 45pt 상한 ─────────────────────
+
+    # 1-a. SOFR-EFFR 스프레드 (bp) — cap 6pt
+    sofr = conn.execute("SELECT rate FROM nyfed_sofr ORDER BY date DESC LIMIT 1").fetchone()
+    effr = conn.execute("SELECT rate FROM nyfed_effr ORDER BY date DESC LIMIT 1").fetchone()
+    if sofr and effr:
+        v = round((sofr["rate"] - effr["rate"]) * 100, 2)
+        inds["sofr_effr"] = dict(
+            name="SOFR-EFFR 스프레드", layer=1, cap=6, value=v, unit="bp",
+            tier=_tier(v, [(0,"normal"), (3,"watch"), (8,"stress"), (None,"crisis")]),
+        )
+
+    # 1-b. A2/P2 − AA CP 스프레드 (bp) — cap 6pt
+    cp30 = conn.execute("SELECT value FROM cp_30d ORDER BY date DESC LIMIT 1").fetchone()
+    aa   = conn.execute("SELECT value FROM aa_manual ORDER BY date DESC LIMIT 1").fetchone()
+    if cp30 and aa:
+        v = round((cp30["value"] - aa["value"]) * 100, 2)
+        inds["cp_aa_spread"] = dict(
+            name="CP 스프레드 (A2/P2−AA)", layer=1, cap=6, value=v, unit="bp",
+            tier=_tier(v, [(20,"normal"), (35,"watch"), (50,"stress"), (None,"crisis")]),
+        )
+
+    # 1-c. RRP 잔고 (B$, 낮을수록 위험) — cap 4pt
+    rrp = conn.execute("SELECT total_amt_billions FROM nyfed_rrp ORDER BY date DESC LIMIT 1").fetchone()
+    if rrp and rrp["total_amt_billions"] is not None:
+        v = rrp["total_amt_billions"]
+        inds["rrp"] = dict(
+            name="RRP 잔고", layer=1, cap=4, value=v, unit="B$",
+            tier=_tier(-v, [(-300,"normal"), (-100,"watch"), (-50,"stress"), (None,"crisis")]),
+        )
+
+    # ── Layer 2: 신용시장 (Credit) — 30pt 상한 ────────────────────
+
+    # 2-a. HY OAS (%) — cap 7pt
+    hy = conn.execute("SELECT value FROM hy_index ORDER BY date DESC LIMIT 1").fetchone()
+    if hy:
+        v = hy["value"]
+        inds["hy_oas"] = dict(
+            name="HY OAS", layer=2, cap=7, value=v, unit="%",
+            tier=_tier(v, [(3.5,"normal"), (5.0,"watch"), (7.0,"stress"), (None,"crisis")]),
+        )
+
+    # 2-b. A2/P2 CP − EFFR 스프레드 (pp) — cap 5pt
+    if cp30 and effr:
+        v = round(cp30["value"] - effr["rate"], 4)
+        inds["cp_effr"] = dict(
+            name="A2/P2 CP−EFFR", layer=2, cap=5, value=v, unit="pp",
+            tier=_tier(v, [(0.30,"normal"), (0.60,"watch"), (1.00,"stress"), (None,"crisis")]),
+        )
+
+    # ── Layer 3: 주식·변동성 (Surface) — 15pt 상한 ───────────────
+
+    # 3-a. MOVE Index — cap 4pt
+    mv = conn.execute("SELECT value FROM move_index ORDER BY date DESC LIMIT 1").fetchone()
+    if mv and mv["value"]:
+        v = mv["value"]
+        inds["move"] = dict(
+            name="MOVE Index", layer=3, cap=4, value=v, unit="",
+            tier=_tier(v, [(80,"normal"), (100,"watch"), (150,"stress"), (None,"crisis")]),
+        )
+
+    conn.close()
+
+    # ── 레이어별 점수 계산 ────────────────────────────────────────
+    l1 = l2 = l3 = 0.0
+    for ind in inds.values():
+        pts = _TIER_SCORE[ind["tier"]] * ind["cap"]
+        if   ind["layer"] == 1: l1 += pts
+        elif ind["layer"] == 2: l2 += pts
+        elif ind["layer"] == 3: l3 += pts
+
+    l1 = min(round(l1, 2), 45.0)
+    l2 = min(round(l2, 2), 30.0)
+    l3 = min(round(l3, 2), 15.0)
+
+    # ── Cross-Layer Divergence — 10pt 상한 ───────────────────────
+    l1_sev = l1 / 45
+    l2_sev = l2 / 30
+    l3_sev = l3 / 15 if l3 > 0 else 0.0
+    div = round(min(max(((l1_sev + l2_sev) / 2 - l3_sev) * 10, 0), 10), 2)
+    total = round(l1 + l2 + l3 + div, 1)
+
+    # ── 전체 Tier ─────────────────────────────────────────────────
+    total_tier = _tier(total, [(20,"normal"), (40,"watch"), (65,"stress"), (None,"crisis")])
+
+    # ── Inverse Turkey 판별 ───────────────────────────────────────
+    inv_turkey = bool(l1_sev >= 0.5 and l2_sev >= 0.4 and l3_sev <= 0.2)
+
+    # ── 해석 텍스트 생성 ─────────────────────────────────────────
+    interp = _tmrs_interpret(total, total_tier, l1, l2, l3, div, inv_turkey, inds)
+
+    # ── DB 저장 ───────────────────────────────────────────────────
+    tiers_j    = json.dumps({k: v["tier"]  for k, v in inds.items()}, ensure_ascii=False)
+    snapshot_j = json.dumps({k: {"value": v["value"], "tier": v["tier"]} for k, v in inds.items()}, ensure_ascii=False)
+    c = get_db()
+    c.execute(
+        """INSERT INTO tmrs_scores
+           (calculated_at, trigger, total_score, total_tier,
+            l1_score, l2_score, l3_score, div_score,
+            indicator_tiers, inverse_turkey, interpretation, snapshot)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (now_kst_str(), trigger, total, total_tier,
+         l1, l2, l3, div, tiers_j, int(inv_turkey), interp, snapshot_j),
+    )
+    c.commit()
+    c.close()
+    log.info(f"[TMRS] 계산 완료: {total}점 ({total_tier}) | trigger={trigger}")
+    return {
+        "total_score": total, "total_tier": total_tier,
+        "l1_score": l1, "l2_score": l2, "l3_score": l3, "div_score": div,
+        "indicators": inds, "inverse_turkey": inv_turkey,
+        "interpretation": interp, "calculated_at": now_kst_str(),
+    }
+
+
+def _tmrs_interpret(total, tier, l1, l2, l3, div, inv_turkey, inds) -> str:
+    """룰 기반 TMRS 해석 텍스트 (한국어)."""
+    if not inds:
+        return "데이터 수집 중입니다. 지표가 업데이트된 후 자동으로 평가됩니다."
+
+    l1_sev = l1 / 45
+    l2_sev = l2 / 30
+    l3_sev = l3 / 15 if l3 > 0 else 0.0
+    dom = max([("자금시장(Layer 1)", l1_sev),
+               ("신용시장(Layer 2)", l2_sev),
+               ("주식·변동성(Layer 3)", l3_sev)], key=lambda x: x[1])
+    stressed = [v["name"] for v in inds.values() if v["tier"] in ("stress", "crisis")]
+
+    if inv_turkey:
+        return (
+            f"⚠️ Inverse Turkey 패턴 감지 (TMRS {total:.0f}점): "
+            "자금·신용시장에서 심각한 이상 신호가 누적되고 있으나 주식시장은 아직 반응하지 않은 상태입니다. "
+            "시장이 인식하지 못한 위험이 내재된 상황으로 각별한 주의가 필요합니다."
+        )
+    if tier == "normal":
+        return (
+            f"✅ 안정 구간 (TMRS {total:.0f}점): "
+            "자금·신용·주식시장 전반적으로 정상 수준이 유지되고 있습니다. "
+            "일상적인 모니터링을 지속합니다."
+        )
+    if tier == "watch":
+        s = f"🟡 주의 구간 (TMRS {total:.0f}점): {dom[0]}에서 초기 경고 신호가 감지됩니다. "
+        s += (f"{', '.join(stressed[:2])} 추이를 집중 모니터링하십시오."
+              if stressed else "아직 스트레스 수준은 아니나 지속 관찰이 필요합니다.")
+        return s
+    if tier == "stress":
+        s = f"🔴 스트레스 구간 (TMRS {total:.0f}점): "
+        s += f"{', '.join(stressed[:3])} 등에서 명확한 이상 신호가 확인됩니다. " if stressed else ""
+        s += f"{dom[0]}이 주요 스트레스 원인입니다. 포지션 및 리스크 점검을 권장합니다."
+        return s
+    return (
+        f"🚨 위기 구간 (TMRS {total:.0f}점): "
+        "복합적인 위기 신호가 다수 레이어에서 동시 감지됩니다. "
+        "즉각적인 리스크 관리 행동이 필요합니다."
+    )
+
+
+def _tmrs_after_update():
+    """지표 갱신 잡 완료 후 호출: TMRS 즉시 재계산 + Tier 변경 시 텔레그램 알림."""
+    try:
+        result = _compute_tmrs(trigger="indicator_update")
+        # 이전 기록과 Tier 비교
+        conn = get_db()
+        rows = conn.execute(
+            "SELECT total_tier FROM tmrs_scores ORDER BY calculated_at DESC LIMIT 2"
+        ).fetchall()
+        conn.close()
+        if len(rows) == 2 and rows[0]["total_tier"] != rows[1]["total_tier"]:
+            msg = (
+                f"[Signal Desk] TMRS Tier 변경\n"
+                f"{rows[1]['total_tier'].upper()} → {rows[0]['total_tier'].upper()}\n"
+                f"점수: {result['total_score']}점\n"
+                f"{result['interpretation']}"
+            )
+            telegram_alerts.send_message(msg)
+            log.info(f"[TMRS] Tier 변경 알림 발송: {rows[1]['total_tier']} → {rows[0]['total_tier']}")
+    except Exception as exc:
+        log.error(f"[TMRS] 갱신 후 재계산 오류: {exc}")
+
+
 # ── 스케줄 작업 ────────────────────────────────────────────────
 
 def make_refresh_job(series_id: str, meta: dict):
@@ -444,6 +671,8 @@ def make_refresh_job(series_id: str, meta: dict):
                         )
                 except Exception as exc:
                     log.error(f"[{series_id}] 알람 체크 오류: {exc}")
+            # TMRS 재계산 (지표 업데이트 시마다)
+            _tmrs_after_update()
         else:
             log.warning(f"[{series_id}] 정기 갱신 실패 — FRED API 응답 없음")
             telegram_alerts.record_error(f"fred_{series_id}", "FRED API 응답 없음")
@@ -515,6 +744,14 @@ def start_scheduler() -> BackgroundScheduler:
         id="refresh_portfolio",
     )
     log.info("[Portfolio] 스케줄 등록: 매 5분")
+
+    # TMRS Signal Desk: 매일 08:00 KST 정기 계산
+    scheduler.add_job(
+        lambda: _compute_tmrs(trigger="daily_08"),
+        trigger=CronTrigger(hour="8", minute="0", timezone="Asia/Seoul"),
+        id="tmrs_daily", **_JOB_DEFAULTS,
+    )
+    log.info("[TMRS] 스케줄 등록: 매일 08:00 KST")
 
     # MOVE Index: 매일 07:00 / 22:00 KST (시장 마감 후 갱신)
     scheduler.add_job(
@@ -1325,6 +1562,58 @@ def get_data():
         # 공통
         "server_time_kst": now_kst_str(),
     })
+
+
+@app.route("/signal-desk")
+def signal_desk_data():
+    """Signal Desk: 최신 TMRS 점수 + 이력 반환."""
+    conn = get_db()
+    latest = conn.execute(
+        "SELECT * FROM tmrs_scores ORDER BY calculated_at DESC LIMIT 1"
+    ).fetchone()
+    history = conn.execute(
+        "SELECT calculated_at, total_score, total_tier FROM tmrs_scores ORDER BY calculated_at DESC LIMIT 30"
+    ).fetchall()
+    conn.close()
+
+    if latest:
+        tiers = json.loads(latest["indicator_tiers"] or "{}")
+        snapshot = json.loads(latest["snapshot"] or "{}")
+        result = {
+            "total_score":    latest["total_score"],
+            "total_tier":     latest["total_tier"],
+            "l1_score":       latest["l1_score"],
+            "l2_score":       latest["l2_score"],
+            "l3_score":       latest["l3_score"],
+            "div_score":      latest["div_score"],
+            "inverse_turkey": bool(latest["inverse_turkey"]),
+            "interpretation": latest["interpretation"],
+            "calculated_at":  latest["calculated_at"],
+            "trigger":        latest["trigger"],
+            "indicator_tiers": tiers,
+            "snapshot":       snapshot,
+            "tier_meta":      _TIER_META,
+            "history":        [dict(r) for r in history],
+        }
+    else:
+        result = {"total_score": None, "calculated_at": None, "history": []}
+
+    return jsonify(result)
+
+
+@app.route("/signal-desk/recalculate", methods=["POST"])
+def signal_desk_recalculate():
+    """Signal Desk: 수동 TMRS 즉시 재계산."""
+    if not current_user.is_authenticated:
+        return jsonify({"error": "로그인이 필요합니다."}), 401
+    try:
+        result = _compute_tmrs(trigger="manual")
+        return jsonify({"ok": True, "total_score": result["total_score"],
+                        "total_tier": result["total_tier"],
+                        "calculated_at": result["calculated_at"]})
+    except Exception as e:
+        log.error(f"[TMRS] 수동 재계산 오류: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/aa-input", methods=["POST"])
