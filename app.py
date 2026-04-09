@@ -537,7 +537,8 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
 
     # ── Layer 3-b: VIX — cap 4pt (이중 소스) ──────────────────────
     # daily_08 → FRED DB (공식 전일 종가)
-    # 그 외    → yfinance 실시간(^VIX 또는 VX=F) → FRED 폴백
+    # 그 외    → yfinance ^VIX 현물 실시간 → FRED 폴백
+    # (VX=F 선물 티커는 yfinance에서 지원 중단됨 → ^VIX 단일 소스)
     _vix_val  = None
     _vix_name = "VIX"
 
@@ -547,23 +548,16 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
             _result: list = []
 
             def _yf_fetch():
-                kst_h = now_kst().hour + now_kst().minute / 60.0
-                # KST 22:30~익일 05:00 = 미국 장중 → VIX 현물(^VIX)
-                # 그 외 = 미국 장외 → VIX 선물(VX=F)
-                if kst_h >= 22.5 or kst_h < 5.0:
-                    sym, label = "^VIX", "VIX 현물"
-                else:
-                    sym, label = "VX=F", "VIX 선물(장외)"
-                hist = yf.Ticker(sym).history(period="2d", interval="5m")
+                hist = yf.Ticker("^VIX").history(period="2d", interval="5m")
                 if not hist.empty:
-                    _result.append((round(float(hist["Close"].iloc[-1]), 2), label))
+                    _result.append((round(float(hist["Close"].iloc[-1]), 2), "VIX 현물"))
 
             _t = _th.Thread(target=_yf_fetch, daemon=True)
             _t.start()
             _t.join(timeout=10)  # 최대 10초 대기
             if _result:
                 _vix_val, _vix_name = _result[0]
-                log.info(f"[VIX] {_vix_name} 실시간: {_vix_val}")
+                log.info(f"[VIX] 실시간: {_vix_val}")
             elif _t.is_alive():
                 log.warning("[VIX] yfinance 타임아웃 (10s) — FRED DB 폴백")
         except Exception as _e:
@@ -2287,12 +2281,17 @@ def get_jpy_history():
 _portfolio_cache: dict = {"data": None, "updated_at": None}
 _portfolio_lock = threading.Lock()
 _PORTFOLIO_CACHE_TTL = 60  # 초 (1분)
+_portfolio_refreshing = threading.Event()  # Playwright 이중 실행 방지
 
 
 def refresh_portfolio() -> None:
     """Portfolio 데이터를 수집해 메모리 캐시에 저장합니다.
     수집 후 각 지표별 임계치 초과 시 텔레그램 알람을 발송합니다.
     """
+    if _portfolio_refreshing.is_set():
+        log.info("[Portfolio] 이미 갱신 중 — 중복 실행 건너뜀")
+        return
+    _portfolio_refreshing.set()
     log.info("[Portfolio] 갱신 시작")
     try:
         result = portfolio_scraper.fetch_all()
@@ -2318,6 +2317,8 @@ def refresh_portfolio() -> None:
     except Exception as exc:
         log.error(f"[Portfolio] refresh_portfolio 오류: {exc}")
         telegram_alerts.record_error("portfolio", str(exc))
+    finally:
+        _portfolio_refreshing.clear()  # 완료 후 플래그 해제
 
 
 @app.route("/portfolio")
