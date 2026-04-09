@@ -2340,10 +2340,11 @@ def get_portfolio():
     )
 
     if not cache_fresh:
-        log.info("[Portfolio] 캐시 미스 — 실시간 수집")
-        refresh_portfolio()
-        with _portfolio_lock:
-            cached = _portfolio_cache.get("data")
+        # 스케줄러가 백그라운드에서 수집 중이거나 곧 수집 예정 — 즉시 Playwright 실행 금지
+        # (캐시 미스 시 HTTP 요청 스레드에서 Playwright 실행하면 OOM 위험)
+        if not _portfolio_refreshing.is_set():
+            log.info("[Portfolio] 캐시 미스 — 백그라운드 갱신 요청")
+            threading.Thread(target=refresh_portfolio, daemon=True, name="portfolio_bg").start()
 
     if not cached:
         return jsonify({"rows": [], "updated_at": now_kst_str(), "status": "loading"})
@@ -2459,11 +2460,9 @@ def _startup_full_refresh() -> None:
     except Exception as exc:
         log.error(f"[Startup] JPY 갱신 오류: {exc}")
 
-    # 4. Portfolio 갱신 + 알람
-    try:
-        refresh_portfolio()
-    except Exception as exc:
-        log.error(f"[Startup] Portfolio 갱신 오류: {exc}")
+    # 4. Portfolio — startup 시 즉시 실행 생략 (Playwright OOM 방지)
+    # 첫 수집은 스케줄러 15분 주기 잡이 담당
+    log.info("[Startup] Portfolio 초기 수집 생략 — 스케줄러 첫 실행 시 자동 수집")
 
     # 5. MOVE Index 갱신 + 알람 (DB 비어있으면 3개월치 초기 로드)
     try:
