@@ -543,18 +543,29 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
 
     if trigger != "daily_08" and _yf_available:
         try:
-            kst_h = now_kst().hour + now_kst().minute / 60.0
-            # KST 22:30~익일 05:00 = 미국 장중 → VIX 현물(^VIX)
-            # 그 외 = 미국 장외 → VIX 선물(VX=F)
-            if kst_h >= 22.5 or kst_h < 5.0:
-                _sym, _label = "^VIX", "VIX 현물"
-            else:
-                _sym, _label = "VX=F", "VIX 선물(장외)"
-            _hist = yf.Ticker(_sym).history(period="2d", interval="5m")
-            if not _hist.empty:
-                _vix_val  = round(float(_hist["Close"].iloc[-1]), 2)
-                _vix_name = _label
-                log.info(f"[VIX] {_label} 실시간: {_vix_val}")
+            import threading as _th
+            _result: list = []
+
+            def _yf_fetch():
+                kst_h = now_kst().hour + now_kst().minute / 60.0
+                # KST 22:30~익일 05:00 = 미국 장중 → VIX 현물(^VIX)
+                # 그 외 = 미국 장외 → VIX 선물(VX=F)
+                if kst_h >= 22.5 or kst_h < 5.0:
+                    sym, label = "^VIX", "VIX 현물"
+                else:
+                    sym, label = "VX=F", "VIX 선물(장외)"
+                hist = yf.Ticker(sym).history(period="2d", interval="5m")
+                if not hist.empty:
+                    _result.append((round(float(hist["Close"].iloc[-1]), 2), label))
+
+            _t = _th.Thread(target=_yf_fetch, daemon=True)
+            _t.start()
+            _t.join(timeout=10)  # 최대 10초 대기
+            if _result:
+                _vix_val, _vix_name = _result[0]
+                log.info(f"[VIX] {_vix_name} 실시간: {_vix_val}")
+            elif _t.is_alive():
+                log.warning("[VIX] yfinance 타임아웃 (10s) — FRED DB 폴백")
         except Exception as _e:
             log.warning(f"[VIX] yfinance 실패 ({_e}) — FRED DB 폴백")
 
