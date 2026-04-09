@@ -1697,6 +1697,7 @@ function renderSignalDesk(data) {
         hy_oas:       'HY OAS',
         cp_effr:      'A2/P2 CP−EFFR',
         move:         'MOVE Index',
+        vix:          'VIX',
     };
     const indEl = document.getElementById('sd-indicators');
     if (Object.keys(tiers).length === 0) {
@@ -1705,7 +1706,7 @@ function renderSignalDesk(data) {
         indEl.innerHTML = Object.entries(tiers).map(([k, tier]) => {
             const color = TIER_COLOR[tier] || '#4a5568';
             const val   = snap[k] ? snap[k].value : '';
-            const name  = IND_NAMES[k] || k;
+            const name  = (snap[k] && snap[k].name) ? snap[k].name : (IND_NAMES[k] || k);
             return `<div style="display:flex;align-items:center;gap:8px;">
                 <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;flex-shrink:0;"></span>
                 <span style="font-size:11px;color:#a0aec0;flex:1;">${name}</span>

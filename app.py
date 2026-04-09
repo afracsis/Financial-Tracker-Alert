@@ -13,6 +13,12 @@ import logging
 import time
 import threading
 import urllib.request
+
+try:
+    import yfinance as yf
+    _yf_available = True
+except ImportError:
+    _yf_available = False
 import urllib.parse
 from datetime import datetime, timedelta, date as date_type
 from functools import wraps
@@ -103,6 +109,17 @@ INDICATORS = {
         "schedule": {
             "hour": "7,22",   # KST 07:00 및 22:00 (HY OA 동일 주기)
             "minute": "0",
+            "timezone": "Asia/Seoul",
+        },
+    },
+    "VIXCLS": {
+        "name": "VIX (CBOE)",
+        "description": "CBOE Volatility Index — daily close via FRED",
+        "table": "vix_index",
+        "color": "#9f7aea",
+        "schedule": {
+            "hour": "7,22",
+            "minute": "10",   # FRED/NY Fed 갱신(minute=0) 이후
             "timezone": "Asia/Seoul",
         },
     },
@@ -518,6 +535,43 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
 
     conn.close()
 
+    # ── Layer 3-b: VIX — cap 4pt (이중 소스) ──────────────────────
+    # daily_08 → FRED DB (공식 전일 종가)
+    # 그 외    → yfinance 실시간(^VIX 또는 VX=F) → FRED 폴백
+    _vix_val  = None
+    _vix_name = "VIX"
+
+    if trigger != "daily_08" and _yf_available:
+        try:
+            kst_h = now_kst().hour + now_kst().minute / 60.0
+            # KST 22:30~익일 05:00 = 미국 장중 → VIX 현물(^VIX)
+            # 그 외 = 미국 장외 → VIX 선물(VX=F)
+            if kst_h >= 22.5 or kst_h < 5.0:
+                _sym, _label = "^VIX", "VIX 현물"
+            else:
+                _sym, _label = "VX=F", "VIX 선물(장외)"
+            _hist = yf.Ticker(_sym).history(period="2d", interval="5m")
+            if not _hist.empty:
+                _vix_val  = round(float(_hist["Close"].iloc[-1]), 2)
+                _vix_name = _label
+                log.info(f"[VIX] {_label} 실시간: {_vix_val}")
+        except Exception as _e:
+            log.warning(f"[VIX] yfinance 실패 ({_e}) — FRED DB 폴백")
+
+    if _vix_val is None:
+        _vc = get_db()
+        _vr = _vc.execute("SELECT value FROM vix_index ORDER BY date DESC LIMIT 1").fetchone()
+        _vc.close()
+        if _vr:
+            _vix_val  = _vr["value"]
+            _vix_name = "VIX (FRED)"
+
+    if _vix_val is not None:
+        inds["vix"] = dict(
+            name=_vix_name, layer=3, cap=4, value=_vix_val, unit="",
+            tier=_tier(_vix_val, [(20,"normal"), (25,"watch"), (35,"stress"), (None,"crisis")]),
+        )
+
     # ── 레이어별 점수 계산 ────────────────────────────────────────
     l1 = l2 = l3 = 0.0
     for ind in inds.values():
@@ -547,8 +601,11 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
     interp = _tmrs_interpret(total, total_tier, l1, l2, l3, div, inv_turkey, inds)
 
     # ── DB 저장 ───────────────────────────────────────────────────
-    tiers_j    = json.dumps({k: v["tier"]  for k, v in inds.items()}, ensure_ascii=False)
-    snapshot_j = json.dumps({k: {"value": v["value"], "tier": v["tier"]} for k, v in inds.items()}, ensure_ascii=False)
+    tiers_j    = json.dumps({k: v["tier"] for k, v in inds.items()}, ensure_ascii=False)
+    snapshot_j = json.dumps(
+        {k: {"value": v["value"], "tier": v["tier"], "name": v["name"]} for k, v in inds.items()},
+        ensure_ascii=False,
+    )
     c = get_db()
     c.execute(
         """INSERT INTO tmrs_scores
