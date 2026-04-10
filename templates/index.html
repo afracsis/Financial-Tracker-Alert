@@ -896,7 +896,7 @@
         <!-- SOFR - EFFR Spread -->
         <div class="nyfed-card">
             <div class="nyfed-card-accent" style="background:#f6ad55;"></div>
-            <div class="nyfed-label">SOFR − EFFR Spread <span style="color:#4a5568;font-size:10px;">· ≥0.05%p 시 빨간색</span></div>
+            <div class="nyfed-label">SOFR − EFFR Spread <span style="color:#4a5568;font-size:10px;">· 양수=스트레스 (0bp Watch / 3bp Stress / 8bp Crisis)</span></div>
             <div class="nyfed-value loading" id="nyfed-spread">—<span class="nyfed-unit">%p</span></div>
             <div class="nyfed-sub" id="nyfed-spread-sub">로딩 중...</div>
         </div>
@@ -1908,19 +1908,28 @@ async function loadNyfed() {
         const spreadEl  = document.getElementById('nyfed-spread');
         const spreadSub = document.getElementById('nyfed-spread-sub');
         if (d.spread_date && d.spread !== null && d.spread !== undefined) {
-            const spread   = d.spread;
+            const spread   = d.spread;          // 단위: %p  (예: -0.05 = -5bp)
+            const spreadBp = spread * 100;       // bp 단위로 변환
             const sign     = spread >= 0 ? '+' : '';
-            const isAlert  = Math.abs(spread) >= 0.05;
-            const cls      = isAlert ? 'spread-alert'
-                           : spread > 0 ? 'nyfed-spread-pos'
-                           : spread < 0 ? 'nyfed-spread-neg'
-                           : 'nyfed-spread-zero';
+
+            // 방향성 티어: 음수=정상(SOFR<EFFR), 양수=스트레스
+            let tier, tierLabel, cls;
+            if (spreadBp < 0) {
+                tier = 'normal'; tierLabel = '정상 (SOFR < EFFR)'; cls = 'nyfed-spread-neg';
+            } else if (spreadBp < 3) {
+                tier = 'watch';  tierLabel = '⚠️ Watch (0~3bp)';   cls = 'nyfed-spread-pos';
+            } else if (spreadBp < 8) {
+                tier = 'stress'; tierLabel = '🔴 Stress (3~8bp)';  cls = 'spread-alert';
+            } else {
+                tier = 'crisis'; tierLabel = '🚨 Crisis (>8bp)';   cls = 'spread-alert';
+            }
+
             spreadEl.innerHTML = `<span class="${cls}">${sign}${spread.toFixed(2)}</span><span class="nyfed-unit">%p</span>`;
             spreadEl.classList.remove('loading');
             const effrRate = d.effr?.rate?.toFixed(2) ?? '—';
             const sofrRate = d.sofr?.rate?.toFixed(2) ?? '—';
             spreadSub.textContent =
-                `SOFR(${sofrRate}%) − EFFR(${effrRate}%) · 공통기준일: ${d.spread_date}${isAlert ? '  ⚠️ 임계값 초과' : ''}`;
+                `SOFR(${sofrRate}%) − EFFR(${effrRate}%) · 공통기준일: ${d.spread_date} · ${tierLabel}`;
         } else {
             spreadEl.innerHTML = `<span class="nyfed-spread-zero" style="font-size:18px;">데이터 대기 중</span>`;
             spreadEl.classList.remove('loading');
