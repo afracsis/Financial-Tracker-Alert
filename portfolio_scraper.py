@@ -289,21 +289,34 @@ def fetch_korea_cds_wgb() -> dict:
 
 
 
+# BTC는 24/7 거래 → 별도 12시간 전 기준 처리
+_BTC_SYMBOL = "BTC-USD"
+
+
 # ── yfinance 데이터 수집 ─────────────────────────────────────────
 def fetch_yfinance() -> list[dict]:
-    """yfinance로 모든 티커의 최신 가격 + 전일비를 수집합니다."""
+    """yfinance로 모든 티커의 최신 가격 + 등락을 수집합니다.
+
+    기준:
+    - 일반 자산: 전일 종가 기준 (interval=1d, iloc[-1] vs iloc[-2])
+    - BTC-USD:  12시간 전 기준 (interval=1h, iloc[-1] vs iloc[-13])
+    """
     try:
         import yfinance as yf
     except ImportError:
         log.error("[Portfolio] yfinance 미설치")
         return []
 
-    symbols = [t[0] for t in YFINANCE_TICKERS]
     now_kst = datetime.now(tz=KST).strftime("%Y-%m-%d %H:%M KST")
 
+    # ── 1. 일반 자산: 전일 종가 기준 (interval=1d) ──────────────
+    regular_tickers = [(s, n, c, u) for s, n, c, u in YFINANCE_TICKERS if s != _BTC_SYMBOL]
+    regular_symbols = [t[0] for t in regular_tickers]
+
+    raw = None
     try:
         raw = yf.download(
-            tickers=symbols,
+            tickers=regular_symbols,
             period="5d",
             interval="1d",
             group_by="ticker",
@@ -312,13 +325,15 @@ def fetch_yfinance() -> list[dict]:
             threads=True,
         )
     except Exception as exc:
-        log.error(f"[Portfolio] yfinance download 오류: {exc}")
-        return []
+        log.error(f"[Portfolio] yfinance daily download 오류: {exc}")
 
     results = []
-    for symbol, name, category, unit in YFINANCE_TICKERS:
+    for symbol, name, category, unit in regular_tickers:
         try:
-            if len(symbols) == 1:
+            if raw is None or (hasattr(raw, 'empty') and raw.empty):
+                results.append(_empty_row(symbol, name, category, unit, now_kst))
+                continue
+            if len(regular_symbols) == 1:
                 df = raw
             else:
                 df = raw[symbol] if symbol in raw.columns.get_level_values(0) else None
@@ -337,10 +352,11 @@ def fetch_yfinance() -> list[dict]:
                 results.append(_empty_row(symbol, name, category, unit, now_kst))
                 continue
 
-            last = float(closes.iloc[-1])
-            prev = float(closes.iloc[-2]) if len(closes) >= 2 else None
-            chg  = round(last - prev, 4) if prev is not None else None
-            pct  = round((chg / prev) * 100, 2) if (prev and prev != 0) else None
+            # 전일 종가 기준: iloc[-1]=최신가, iloc[-2]=전일 공식 종가
+            last       = float(closes.iloc[-1])
+            prev_close = float(closes.iloc[-2]) if len(closes) >= 2 else None
+            chg = round(last - prev_close, 4) if prev_close is not None else None
+            pct = round((chg / prev_close) * 100, 2) if (chg is not None and prev_close) else None
 
             results.append({
                 "symbol":   symbol,
@@ -350,6 +366,7 @@ def fetch_yfinance() -> list[dict]:
                 "last":     round(last, 4),
                 "chg":      chg,
                 "chg_pct":  pct,
+                "chg_base": "전일종가",
                 "source":   "yfinance",
                 "updated_at": now_kst,
             })
@@ -357,13 +374,41 @@ def fetch_yfinance() -> list[dict]:
             log.warning(f"[Portfolio] {symbol} 처리 오류: {exc}")
             results.append(_empty_row(symbol, name, category, unit, now_kst))
 
+    # ── 2. BTC: 12시간 전 기준 (interval=1h) ────────────────────
+    btc_name, btc_cat, btc_unit = "Bitcoin", "Crypto", "USD"
+    try:
+        btc_hist = yf.Ticker(_BTC_SYMBOL).history(period="2d", interval="1h")
+        btc_closes = btc_hist["Close"].dropna() if not btc_hist.empty else None
+        if btc_closes is None or len(btc_closes) < 13:
+            results.append(_empty_row(_BTC_SYMBOL, btc_name, btc_cat, btc_unit, now_kst))
+        else:
+            btc_last    = float(btc_closes.iloc[-1])
+            btc_prev12h = float(btc_closes.iloc[-13])  # 12시간 전 (1h × 12)
+            btc_chg     = round(btc_last - btc_prev12h, 2)
+            btc_pct     = round((btc_chg / btc_prev12h) * 100, 2) if btc_prev12h else None
+            results.append({
+                "symbol":   _BTC_SYMBOL,
+                "name":     btc_name,
+                "category": btc_cat,
+                "unit":     btc_unit,
+                "last":     round(btc_last, 2),
+                "chg":      btc_chg,
+                "chg_pct":  btc_pct,
+                "chg_base": "12시간전",
+                "source":   "yfinance",
+                "updated_at": now_kst,
+            })
+    except Exception as exc:
+        log.warning(f"[Portfolio] BTC-USD 처리 오류: {exc}")
+        results.append(_empty_row(_BTC_SYMBOL, btc_name, btc_cat, btc_unit, now_kst))
+
     return results
 
 
 def _empty_row(symbol, name, category, unit, ts) -> dict:
     return {
         "symbol": symbol, "name": name, "category": category, "unit": unit,
-        "last": None, "chg": None, "chg_pct": None,
+        "last": None, "chg": None, "chg_pct": None, "chg_base": None,
         "source": "yfinance", "updated_at": ts,
     }
 

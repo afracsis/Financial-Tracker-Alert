@@ -2640,6 +2640,9 @@ function _applyPtfSort() {
         const pctFmt   = _fmtPct(row.chg_pct);
         const ts       = (row.updated_at || '').replace(' KST','');
         const unitSpan = row.unit ? `<span class="ptf-unit">${row.unit}</span>` : '';
+        const baseTag  = row.chg_base === '12시간전'
+            ? `<span style="font-size:9px;color:#718096;margin-left:3px;">(12h)</span>`
+            : '';
         // 정렬 중에는 첫 번째 컬럼에 순위 표시
         const firstCell = _ptfSortState !== 'none'
             ? `<span class="ptf-sort-rank">${rank}</span>`
@@ -2650,7 +2653,7 @@ function _applyPtfSort() {
             <td><span class="ptf-name">${row.name}</span>${unitSpan}</td>
             <td style="text-align:right;"><span class="ptf-last">${lastFmt}</span></td>
             <td style="text-align:right;">${chgFmt}</td>
-            <td style="text-align:right;">${pctFmt}</td>
+            <td style="text-align:right;">${pctFmt}${baseTag}</td>
             <td style="text-align:right;" class="ptf-ts">${ts}</td>
         </tr>`;
     }
