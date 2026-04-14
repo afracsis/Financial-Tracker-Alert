@@ -74,6 +74,10 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
 FRED_API_BASE = "https://api.stlouisfed.org/fred/series/observations"
 
+# ── 버전 상수 ───────────────────────────────────────────────────
+THRESHOLD_TABLE_VERSION = "v1.2026-04-01"  # Stage 1 패치 bump (기존 v1.2026-04)
+SCORE_VERSION           = "v1.0.1"         # tmrs_scores 레코드 태깅용
+
 # ── NY Fed API ─────────────────────────────────────────────────
 NYFED_BASE = "https://markets.newyorkfed.org/api"
 NYFED_HEADERS = {"Accept": "application/json"}
@@ -382,9 +386,16 @@ def init_db():
             indicator_tiers TEXT,
             inverse_turkey INTEGER DEFAULT 0,
             interpretation TEXT,
-            snapshot       TEXT
+            snapshot       TEXT,
+            score_version  TEXT    DEFAULT 'v1.0'
         )
     """)
+    # score_version 컬럼 마이그레이션 (기존 DB 호환)
+    existing_tmrs_cols = [r[1] for r in conn.execute("PRAGMA table_info(tmrs_scores)").fetchall()]
+    if "score_version" not in existing_tmrs_cols:
+        conn.execute("ALTER TABLE tmrs_scores ADD COLUMN score_version TEXT DEFAULT 'v1.0'")
+        conn.execute("UPDATE tmrs_scores SET score_version = 'v1.0' WHERE score_version IS NULL")
+        log.info("tmrs_scores: score_version 컬럼 추가 + 기존 레코드 'v1.0' 태깅 완료")
     log.info("tmrs_scores 테이블 준비 완료")
 
     conn.commit()
@@ -706,10 +717,12 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
         """INSERT INTO tmrs_scores
            (calculated_at, trigger, total_score, total_tier,
             l1_score, l2_score, l3_score, div_score,
-            indicator_tiers, inverse_turkey, interpretation, snapshot)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            indicator_tiers, inverse_turkey, interpretation, snapshot,
+            score_version)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (now_kst_str(), trigger, total, total_tier,
-         l1, l2, l3, div, tiers_j, int(inv_turkey), interp, snapshot_j),
+         l1, l2, l3, div, tiers_j, int(inv_turkey), interp, snapshot_j,
+         SCORE_VERSION),
     )
     c.commit()
     c.close()
