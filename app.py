@@ -775,6 +775,14 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
     # ── Inverse Turkey 판별 ───────────────────────────────────────
     inv_turkey = bool(l1_sev >= 0.5 and l2_sev >= 0.4 and l3_sev <= 0.2)
 
+    # ── Inverse Turkey Telegram 알람 (Stage 1: 연결 완료) ────────
+    try:
+        telegram_alerts.alert_inverse_turkey(
+            inv_turkey, l1, l2, l3, total, inds
+        )
+    except Exception as _it_exc:
+        log.error(f"[Inverse Turkey] 알람 발송 오류: {_it_exc}")
+
     # ── 해석 텍스트 생성 ─────────────────────────────────────────
     interp = _tmrs_interpret(total, total_tier, l1, l2, l3, div, inv_turkey, inds)
 
