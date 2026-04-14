@@ -773,7 +773,10 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
     total_tier = _tier(total, [(20,"normal"), (40,"watch"), (65,"stress"), (None,"crisis")])
 
     # ── Inverse Turkey 판별 ───────────────────────────────────────
-    inv_turkey = bool(l1_sev >= 0.5 and l2_sev >= 0.4 and l3_sev <= 0.2)
+    # v1.0 카테고리 4.11.1: l12_avg >= 0.40 AND l3_norm <= 0.25
+    # ADR: 2026-04-14-stage1-inv-turkey-condition-hotfix.md
+    l12_avg = (l1_sev + l2_sev) / 2
+    inv_turkey = bool(l12_avg >= 0.40 and l3_sev <= 0.25)
 
     # ── Inverse Turkey Telegram 알람 (Stage 1: 연결 완료) ────────
     try:
