@@ -398,6 +398,40 @@ def init_db():
         log.info("tmrs_scores: score_version 컬럼 추가 + 기존 레코드 'v1.0' 태깅 완료")
     log.info("tmrs_scores 테이블 준비 완료")
 
+    # ── Stage 1: Layer 2 신규 지표 테이블 ───────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS single_b_oas (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            date       TEXT    NOT NULL UNIQUE,
+            oas_bp     REAL    NOT NULL,
+            fetched_at TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_single_b_oas_date ON single_b_oas(date)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ig_oas (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            date       TEXT    NOT NULL UNIQUE,
+            oas_bp     REAL    NOT NULL,
+            fetched_at TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ig_oas_date ON ig_oas(date)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS lqd_prices (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            date             TEXT    NOT NULL UNIQUE,
+            close_price      REAL    NOT NULL,
+            daily_change_pct REAL,
+            fetched_at       TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_lqd_prices_date ON lqd_prices(date)")
+
+    log.info("Stage 1 신규 테이블 준비 완료 (single_b_oas, ig_oas, lqd_prices)")
+
     conn.commit()
     conn.close()
 
@@ -600,6 +634,39 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
         inds["cp_effr"] = dict(
             name="A2/P2 CP−EFFR", layer=2, cap=5, value=v, unit="pp",
             tier=_tier(v, [(0.30,"normal"), (0.60,"watch"), (1.00,"stress"), (None,"crisis")]),
+        )
+
+    # 2-c. Single-B OAS (bp) — cap 7pt  [Stage 1 신규]
+    # v1.0 카테고리 3.5.1: <350bp normal / 350-450 watch / 450-600 stress / >600 crisis
+    sb_row = conn.execute("SELECT oas_bp FROM single_b_oas ORDER BY date DESC LIMIT 1").fetchone()
+    if sb_row and sb_row["oas_bp"]:
+        v = sb_row["oas_bp"]
+        inds["single_b_oas"] = dict(
+            name="Single-B OAS", layer=2, cap=7, value=v, unit="bp",
+            tier=_tier(v, [(350,"normal"), (450,"watch"), (600,"stress"), (None,"crisis")]),
+        )
+
+    # 2-d. IG OAS (bp) — cap 3pt  [Stage 1 신규]
+    # v1.0 카테고리 3.5.1: <100bp normal / 100-130 watch / 130-180 stress / >180 crisis
+    ig_row = conn.execute("SELECT oas_bp FROM ig_oas ORDER BY date DESC LIMIT 1").fetchone()
+    if ig_row and ig_row["oas_bp"]:
+        v = ig_row["oas_bp"]
+        inds["ig_oas"] = dict(
+            name="IG OAS", layer=2, cap=3, value=v, unit="bp",
+            tier=_tier(v, [(100,"normal"), (130,"watch"), (180,"stress"), (None,"crisis")]),
+        )
+
+    # 2-e. LQD 일간 변화율 (%) — cap 2pt  [Stage 1 신규]
+    # v1.0 카테고리 3.5.2: >-0.5% normal / -0.5~-1% watch / -1~-2% stress / <-2% crisis
+    # Direction: inverse (음수가 클수록 stress → 값 부호 반전하여 _tier 적용)
+    lqd_row = conn.execute(
+        "SELECT daily_change_pct FROM lqd_prices WHERE daily_change_pct IS NOT NULL ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    if lqd_row and lqd_row["daily_change_pct"] is not None:
+        v = lqd_row["daily_change_pct"]
+        inds["lqd_daily"] = dict(
+            name="LQD 일간 변화율", layer=2, cap=2, value=v, unit="%",
+            tier=_tier(-v, [(-0.5,"normal"), (-1.0,"watch"), (-2.0,"stress"), (None,"crisis")]),
         )
 
     # ── Layer 3: 주식·변동성 (Surface) — 15pt 상한 ───────────────
@@ -956,6 +1023,32 @@ def start_scheduler() -> BackgroundScheduler:
     )
     log.info("[H4.1] 스케줄 등록: 매주 금요일 7시 30분 KST (Discount Window + TGA)")
 
+    # Stage 1: Single-B OAS + IG OAS (FRED, 매일 07:15 / 22:15 KST)
+    scheduler.add_job(
+        refresh_single_b_oas,
+        trigger=CronTrigger(hour="7,22", minute="15", timezone="Asia/Seoul"),
+        id="refresh_single_b_oas",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[Single-B OAS] 스케줄 등록: 매일 7,22시 15분 KST")
+
+    scheduler.add_job(
+        refresh_ig_oas,
+        trigger=CronTrigger(hour="7,22", minute="15", timezone="Asia/Seoul"),
+        id="refresh_ig_oas",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[IG OAS] 스케줄 등록: 매일 7,22시 15분 KST")
+
+    # Stage 1: LQD ETF (yfinance, 매일 07:20 / 22:20 KST)
+    scheduler.add_job(
+        refresh_lqd,
+        trigger=CronTrigger(hour="7,22", minute="20", timezone="Asia/Seoul"),
+        id="refresh_lqd",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[LQD] 스케줄 등록: 매일 7,22시 20분 KST")
+
     scheduler.start()
     log.info("스케줄러 시작 완료 (misfire_grace=5분, coalesce=True, max_instances=1)")
     return scheduler
@@ -1301,6 +1394,134 @@ def refresh_skew() -> int:
     else:
         telegram_alerts.record_success("skew_index")
     return count
+
+
+# ── Stage 1: Single-B OAS / IG OAS / LQD (Layer 2 응급 충실화) ──────
+
+def _upsert_oas_table(table: str, rows: list, value_key: str = "oas_bp") -> int:
+    """OAS 테이블 공통 upsert (single_b_oas, ig_oas)."""
+    if not rows:
+        return 0
+    conn = get_db()
+    saved = 0
+    for r in rows:
+        try:
+            v = float(r.get("value", 0))
+            if v <= 0 or r.get("value") == ".":
+                continue
+            # FRED는 % 단위 → bp 변환
+            oas_bp = round(v * 100, 2)
+            cur = conn.execute(
+                f"INSERT OR IGNORE INTO {table} (date, oas_bp, fetched_at) VALUES (?,?,?)",
+                (r["date"], oas_bp, now_kst_str()),
+            )
+            saved += cur.rowcount
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+    log.info(f"[{table}] 신규 저장: {saved}건")
+    return saved
+
+
+def refresh_single_b_oas() -> int:
+    """FRED BAMLH0A2HYBEY (Single-B US HY OAS) 수집 → DB 저장.
+
+    v1.0 문서 카테고리 3.5.1 / Layer 2 가중 7pt
+    임계: Normal <350bp / Watch 350-450bp / Stress 450-600bp / Crisis >600bp
+    """
+    conn = get_db()
+    count = conn.execute("SELECT COUNT(*) FROM single_b_oas").fetchone()[0]
+    conn.close()
+
+    limit = 1000 if count == 0 else 10
+    if count == 0:
+        log.info("[Single-B OAS] DB 비어있음 — 이력 로드 중...")
+
+    rows = fetch_fred_observations("BAMLH0A2HYBEY", limit=limit)
+    if rows:
+        saved = _upsert_oas_table("single_b_oas", rows)
+        if count == 0:
+            log.info(f"[Single-B OAS] 초기 로드 완료: {saved}건")
+        telegram_alerts.record_success("single_b_oas")
+        return saved
+    log.warning("[Single-B OAS] FRED 응답 없음")
+    telegram_alerts.record_error("single_b_oas", "FRED BAMLH0A2HYBEY 응답 없음")
+    return 0
+
+
+def refresh_ig_oas() -> int:
+    """FRED BAMLC0A0CM (IG US Corporate OAS) 수집 → DB 저장.
+
+    v1.0 문서 카테고리 3.5.1 / Layer 2 가중 3pt
+    임계: Normal <100bp / Watch 100-130bp / Stress 130-180bp / Crisis >180bp
+    """
+    conn = get_db()
+    count = conn.execute("SELECT COUNT(*) FROM ig_oas").fetchone()[0]
+    conn.close()
+
+    limit = 1000 if count == 0 else 10
+    if count == 0:
+        log.info("[IG OAS] DB 비어있음 — 이력 로드 중...")
+
+    rows = fetch_fred_observations("BAMLC0A0CM", limit=limit)
+    if rows:
+        saved = _upsert_oas_table("ig_oas", rows)
+        if count == 0:
+            log.info(f"[IG OAS] 초기 로드 완료: {saved}건")
+        telegram_alerts.record_success("ig_oas")
+        return saved
+    log.warning("[IG OAS] FRED 응답 없음")
+    telegram_alerts.record_error("ig_oas", "FRED BAMLC0A0CM 응답 없음")
+    return 0
+
+
+def refresh_lqd() -> int:
+    """LQD ETF 일간 가격 + 변화율 수집 → DB 저장 (yfinance).
+
+    v1.0 문서 카테고리 3.5.2 / Layer 2 가중 2pt
+    임계(daily_change_pct): Normal >-0.5% / Watch -0.5~-1% / Stress -1~-2% / Crisis <-2%
+    Direction: inverse (음수 클수록 stress)
+    """
+    if not _yf_available:
+        log.warning("[LQD] yfinance 미설치 — 스킵")
+        return 0
+    try:
+        import yfinance as yf
+        t    = yf.Ticker("LQD")
+        hist = t.history(period="3mo")
+        if hist.empty:
+            log.warning("[LQD] yfinance 응답 없음")
+            telegram_alerts.record_error("lqd_prices", "yfinance LQD 응답 없음")
+            return 0
+
+        conn  = get_db()
+        saved = 0
+        prev_close = None
+        for ts, row in hist.iterrows():
+            d     = ts.date().isoformat()
+            close = round(float(row["Close"]), 4)
+            chg_pct = None
+            if prev_close is not None and prev_close > 0:
+                chg_pct = round((close - prev_close) / prev_close * 100, 4)
+            prev_close = close
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO lqd_prices
+                   (date, close_price, daily_change_pct, fetched_at)
+                   VALUES (?,?,?,?)""",
+                (d, close, chg_pct, now_kst_str()),
+            )
+            saved += cur.rowcount
+
+        conn.commit()
+        conn.close()
+        log.info(f"[LQD] {saved}건 저장")
+        telegram_alerts.record_success("lqd_prices")
+        return saved
+    except Exception as exc:
+        log.error(f"[LQD] 수집 오류: {exc}")
+        telegram_alerts.record_error("lqd_prices", str(exc))
+        return 0
 
 
 # ── Discount Window / TGA / SOFR90d (FRED API) ───────────────────
@@ -1842,9 +2063,47 @@ def get_data():
             "threshold_bp": SPREAD_THRESHOLD,
             "alert":        spread_current_bp is not None and spread_current_bp > SPREAD_THRESHOLD,
         },
+        # Stage 1: Layer 2 신규 지표 최신값
+        "single_b_oas":  _credit_latest("single_b_oas", "oas_bp"),
+        "ig_oas":        _credit_latest("ig_oas", "oas_bp"),
+        "lqd":           _credit_latest_lqd(),
         # 공통
         "server_time_kst": now_kst_str(),
     })
+
+
+def _credit_latest(table: str, val_col: str) -> dict | None:
+    """OAS 테이블 최신 2개 레코드를 가져와 변화량 포함 dict 반환."""
+    conn = get_db()
+    rows = conn.execute(
+        f"SELECT date, {val_col} AS value FROM {table} ORDER BY date DESC LIMIT 35"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    latest = {"date": rows[0]["date"], "value": rows[0]["value"]}
+    prev   = {"date": rows[1]["date"], "value": rows[1]["value"]} if len(rows) > 1 else None
+    change = change_pct = None
+    if prev and prev["value"]:
+        change     = round(latest["value"] - prev["value"], 2)
+        change_pct = round(change / prev["value"] * 100, 2)
+    history = [{"date": r["date"], "value": r["value"]} for r in reversed(rows)]
+    return {"latest": latest, "prev": prev, "change": change, "change_pct": change_pct, "history": history}
+
+
+def _credit_latest_lqd() -> dict | None:
+    """LQD 최신값 + 일간 변화율 포함 dict 반환."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT date, close_price, daily_change_pct FROM lqd_prices ORDER BY date DESC LIMIT 35"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    latest = {"date": rows[0]["date"], "close": rows[0]["close_price"], "change_pct": rows[0]["daily_change_pct"]}
+    history = [{"date": r["date"], "close": r["close_price"], "change_pct": r["daily_change_pct"]}
+               for r in reversed(rows)]
+    return {"latest": latest, "history": history}
 
 
 @app.route("/signal-desk")
@@ -2838,7 +3097,25 @@ def _startup_full_refresh() -> None:
     except Exception as exc:
         log.error(f"[Startup] TGA 갱신 오류: {exc}")
 
-    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료")
+    # 10. Single-B OAS 초기 로드 (Stage 1)
+    try:
+        refresh_single_b_oas()
+    except Exception as exc:
+        log.error(f"[Startup] Single-B OAS 갱신 오류: {exc}")
+
+    # 11. IG OAS 초기 로드 (Stage 1)
+    try:
+        refresh_ig_oas()
+    except Exception as exc:
+        log.error(f"[Startup] IG OAS 갱신 오류: {exc}")
+
+    # 12. LQD ETF 초기 로드 (Stage 1)
+    try:
+        refresh_lqd()
+    except Exception as exc:
+        log.error(f"[Startup] LQD 갱신 오류: {exc}")
+
+    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 1 포함)")
 
 
 def _startup() -> None:

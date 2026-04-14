@@ -836,6 +836,38 @@
         </div>
     </div>
 
+    <!-- Stage 1: Layer 2 신규 지표 카드 (Single-B OAS / IG OAS / LQD) -->
+    <div class="section-label" style="margin-top:20px;">OAS · ETF 지표 <span style="font-size:10px;color:#68d391;font-weight:normal;">Stage 1 신규</span></div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
+
+        <!-- Single-B OAS -->
+        <div class="nyfed-card" id="credit-sb-card">
+            <div class="nyfed-card-accent" style="background:#f6ad55;"></div>
+            <div class="nyfed-label">Single-B OAS <span style="font-size:9px;color:#718096;">Layer 2 · 7pt</span></div>
+            <div class="nyfed-value loading" id="credit-sb-val">—<span class="nyfed-unit">bp</span></div>
+            <div class="nyfed-sub" id="credit-sb-sub">로딩 중...</div>
+            <div style="font-size:10px;color:#718096;margin-top:4px;">임계: 350 / 450 / 600 bp</div>
+        </div>
+
+        <!-- IG OAS -->
+        <div class="nyfed-card" id="credit-ig-card">
+            <div class="nyfed-card-accent" style="background:#63b3ed;"></div>
+            <div class="nyfed-label">IG OAS <span style="font-size:9px;color:#718096;">Layer 2 · 3pt</span></div>
+            <div class="nyfed-value loading" id="credit-ig-val">—<span class="nyfed-unit">bp</span></div>
+            <div class="nyfed-sub" id="credit-ig-sub">로딩 중...</div>
+            <div style="font-size:10px;color:#718096;margin-top:4px;">임계: 100 / 130 / 180 bp</div>
+        </div>
+
+        <!-- LQD ETF 일간 변화율 -->
+        <div class="nyfed-card" id="credit-lqd-card">
+            <div class="nyfed-card-accent" style="background:#9ae6b4;"></div>
+            <div class="nyfed-label">LQD 일간 변화율 <span style="font-size:9px;color:#718096;">Layer 2 · 2pt</span></div>
+            <div class="nyfed-value loading" id="credit-lqd-val">—<span class="nyfed-unit">%</span></div>
+            <div class="nyfed-sub" id="credit-lqd-sub">로딩 중...</div>
+            <div style="font-size:10px;color:#718096;margin-top:4px;">임계: -0.5 / -1.0 / -2.0 %</div>
+        </div>
+    </div>
+
     <!-- 차트 1: HY OAS + A2/P2 기존 비교 차트 -->
     <div class="chart-section">
         <div class="chart-header">
@@ -1559,6 +1591,54 @@ async function loadData() {
         renderChart(data.records, cp ? cp.records : []);
         renderCpRateChart(cp ? cp.records : [], aa ? aa.records : []);
         renderSpreadChart(sp ? sp.records : [], sp ? sp.threshold_bp : 50);
+
+        // ── Stage 1: Single-B OAS 카드 렌더링 ──────────────────
+        const sb = data.single_b_oas;
+        if (sb && sb.latest) {
+            const v = sb.latest.value;
+            const tier = v < 350 ? {label:'정상',cls:'#68d391'} : v < 450 ? {label:'주의',cls:'#f6ad55'} : v < 600 ? {label:'경계',cls:'#fc8181'} : {label:'위기',cls:'#fc8181'};
+            document.getElementById('credit-sb-val').innerHTML = v.toFixed(1) + '<span class="nyfed-unit">bp</span>';
+            document.getElementById('credit-sb-val').classList.remove('loading');
+            document.getElementById('credit-sb-card').style.borderLeftColor = tier.cls;
+            const chgStr = sb.change !== null ? (sb.change >= 0 ? '+' : '') + sb.change.toFixed(1) + 'bp 전일' : '';
+            document.getElementById('credit-sb-sub').innerHTML =
+                `<span style="color:${tier.cls};font-weight:600;">${tier.label}</span> · ${chgStr} · ${sb.latest.date}`;
+        } else {
+            document.getElementById('credit-sb-sub').textContent = '데이터 없음';
+            document.getElementById('credit-sb-val').classList.remove('loading');
+        }
+
+        // ── Stage 1: IG OAS 카드 렌더링 ────────────────────────
+        const ig = data.ig_oas;
+        if (ig && ig.latest) {
+            const v = ig.latest.value;
+            const tier = v < 100 ? {label:'정상',cls:'#68d391'} : v < 130 ? {label:'주의',cls:'#f6ad55'} : v < 180 ? {label:'경계',cls:'#fc8181'} : {label:'위기',cls:'#fc8181'};
+            document.getElementById('credit-ig-val').innerHTML = v.toFixed(1) + '<span class="nyfed-unit">bp</span>';
+            document.getElementById('credit-ig-val').classList.remove('loading');
+            document.getElementById('credit-ig-card').style.borderLeftColor = tier.cls;
+            const chgStr = ig.change !== null ? (ig.change >= 0 ? '+' : '') + ig.change.toFixed(1) + 'bp 전일' : '';
+            document.getElementById('credit-ig-sub').innerHTML =
+                `<span style="color:${tier.cls};font-weight:600;">${tier.label}</span> · ${chgStr} · ${ig.latest.date}`;
+        } else {
+            document.getElementById('credit-ig-sub').textContent = '데이터 없음';
+            document.getElementById('credit-ig-val').classList.remove('loading');
+        }
+
+        // ── Stage 1: LQD 카드 렌더링 ───────────────────────────
+        const lqd = data.lqd;
+        if (lqd && lqd.latest && lqd.latest.change_pct !== null) {
+            const v = lqd.latest.change_pct;
+            const tier = v > -0.5 ? {label:'정상',cls:'#68d391'} : v > -1.0 ? {label:'주의',cls:'#f6ad55'} : v > -2.0 ? {label:'경계',cls:'#fc8181'} : {label:'위기',cls:'#fc8181'};
+            const sign = v >= 0 ? '+' : '';
+            document.getElementById('credit-lqd-val').innerHTML = sign + v.toFixed(2) + '<span class="nyfed-unit">%</span>';
+            document.getElementById('credit-lqd-val').classList.remove('loading');
+            document.getElementById('credit-lqd-card').style.borderLeftColor = tier.cls;
+            document.getElementById('credit-lqd-sub').innerHTML =
+                `<span style="color:${tier.cls};font-weight:600;">${tier.label}</span> · 종가 $${lqd.latest.close.toFixed(2)} · ${lqd.latest.date}`;
+        } else {
+            document.getElementById('credit-lqd-sub').textContent = '데이터 없음';
+            document.getElementById('credit-lqd-val').classList.remove('loading');
+        }
 
     } catch(e) {
         console.error('FRED 데이터 로드 실패:', e);
