@@ -671,7 +671,7 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
         v = lqd_row["daily_change_pct"]
         inds["lqd_daily"] = dict(
             name="LQD 일간 변화율", layer=2, cap=2, value=v, unit="%",
-            tier=_tier(-v, [(-0.5,"normal"), (-1.0,"watch"), (-2.0,"stress"), (None,"crisis")]),
+            tier=_tier(-v, [(0.5,"normal"), (1.0,"watch"), (2.0,"stress"), (None,"crisis")]),
         )
 
     # ── Layer 3: 주식·변동성 (Surface) — 15pt 상한 ───────────────
@@ -789,7 +789,9 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
     # ── DB 저장 ───────────────────────────────────────────────────
     tiers_j    = json.dumps({k: v["tier"] for k, v in inds.items()}, ensure_ascii=False)
     snapshot_j = json.dumps(
-        {k: {"value": v["value"], "tier": v["tier"], "name": v["name"]} for k, v in inds.items()},
+        {k: {"value": v["value"], "tier": v["tier"], "name": v["name"],
+             "cap": v.get("cap"), "unit": v.get("unit",""), "layer": v.get("layer")}
+         for k, v in inds.items()},
         ensure_ascii=False,
     )
     c = get_db()
