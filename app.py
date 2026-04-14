@@ -619,20 +619,25 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
 
     # ── Layer 2: 신용시장 (Credit) — 30pt 상한 ────────────────────
 
-    # 2-a. HY OAS (%) — cap 7pt
+    # 2-a. HY OAS (%) — cap 5pt  [v1.0 카테고리 4.6 원본 복원: 7→5]
+    # ADR: 2026-04-14-stage1-layer2-weight-correction.md
     hy = conn.execute("SELECT value FROM hy_index ORDER BY date DESC LIMIT 1").fetchone()
     if hy:
         v = hy["value"]
         inds["hy_oas"] = dict(
-            name="HY OAS", layer=2, cap=7, value=v, unit="%",
+            name="HY OAS", layer=2, cap=5, value=v, unit="%",
             tier=_tier(v, [(3.5,"normal"), (5.0,"watch"), (7.0,"stress"), (None,"crisis")]),
         )
 
-    # 2-b. A2/P2 CP − EFFR 스프레드 (pp) — cap 5pt
+    # 2-b. A2/P2 CP − EFFR 스프레드 — cap=0 (점수 기여 보류)  [Stage 1 결정]
+    # 지표는 snapshot/UI에 표시하되 Layer 2 점수 기여 없음.
+    # 사유: v1.0 Layer 2 가중치 표에 없는 독자 구현 지표.
+    #       Stage 2에서 A2/P2-AA Spread(Layer 1, 6pt)와 redundancy 평가 후 정식 처리.
+    # ADR: 2026-04-14-stage1-cp-effr-weight-zero.md
     if cp30 and effr:
         v = round(cp30["value"] - effr["rate"], 4)
         inds["cp_effr"] = dict(
-            name="A2/P2 CP−EFFR", layer=2, cap=5, value=v, unit="pp",
+            name="A2/P2 CP−EFFR", layer=2, cap=0, value=v, unit="pp",
             tier=_tier(v, [(0.30,"normal"), (0.60,"watch"), (1.00,"stress"), (None,"crisis")]),
         )
 
