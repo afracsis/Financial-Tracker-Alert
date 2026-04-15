@@ -18,7 +18,7 @@ import urllib.error
 
 # ── 설정 ─────────────────────────────────────────────────────────────
 REPO   = "afracsis/Financial-Tracker-Alert"
-BRANCH = "main"
+BRANCH = "claude/analyze-financial-tracker-iZh57"  # Stage 1 검증 브랜치 (검증 완료 후 main 전환)
 
 # 이 스크립트가 있는 폴더(dashboard/)를 기준으로 저장
 DEST = os.path.dirname(os.path.abspath(__file__))

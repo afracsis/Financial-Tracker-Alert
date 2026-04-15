@@ -266,3 +266,92 @@ def check_jpy(period: str, annualized_yield: float | None,
     """period: '1M' | '3M' | '3Y' | '7Y' | '10Y'"""
     key = f"jpy_{period.lower().replace('m','m').replace('y','y')}"
     return check_and_alert(key, annualized_yield, prev_yield)
+
+
+# ── Inverse Turkey 전용 알람 ─────────────────────────────────────
+# De-duplication: 24시간 이내 동일 상태 재발송 금지
+#                 False→True 전환 시에만 발송 (True 지속은 1회만)
+_INVERSE_TURKEY_COOLDOWN_HOURS = 24
+
+_it_state: dict[str, bool] = {"prev": False}   # 이전 상태 추적
+
+
+def alert_inverse_turkey(
+    inv_turkey: bool,
+    l1: float, l2: float, l3: float,
+    total: float,
+    inds: dict,
+) -> bool:
+    """
+    Inverse Turkey 패턴 진입 시 텔레그램 알람 발송.
+
+    트리거 조건:
+      - inv_turkey == True 이고
+      - 이전 상태가 False (False→True 전환) 이거나
+      - 24시간 쿨다운 초과 (지속 알람)
+
+    De-duplication:
+      - 동일 True 상태에서 24시간 내 재발송 금지
+      - True→False 전환 시 상태 리셋
+    """
+    _COOLDOWN_KEY = "inverse_turkey"
+
+    # 상태 업데이트: False로 전환 시 쿨다운 리셋
+    if not inv_turkey:
+        if _it_state.get("prev", False):
+            log.info("[Inverse Turkey] False로 전환 — 쿨다운 리셋")
+            _cooldown.pop(_COOLDOWN_KEY, None)
+        _it_state["prev"] = False
+        return False
+
+    # inv_turkey == True
+    was_false = not _it_state.get("prev", False)
+    _it_state["prev"] = True
+
+    # 쿨다운 체크 (24시간)
+    last = _cooldown.get(_COOLDOWN_KEY)
+    if last is not None:
+        elapsed = datetime.now(tz=KST) - last
+        if elapsed < timedelta(hours=_INVERSE_TURKEY_COOLDOWN_HOURS):
+            if not was_false:
+                log.debug(f"[Inverse Turkey] 쿨다운 중 ({elapsed.seconds//3600}h/{_INVERSE_TURKEY_COOLDOWN_HOURS}h) — 발송 건너뜀")
+                return False
+
+    # 메시지 구성
+    l1_norm = l1 / 45
+    l2_norm = l2 / 30
+    l3_norm = l3 / 15 if l3 > 0 else 0.0
+    l12_avg = (l1_norm + l2_norm) / 2
+
+    # 스트레스 지표 목록
+    stressed = [v["name"] for v in inds.values() if v["tier"] in ("stress", "crisis")]
+    stressed_str = " · ".join(stressed) if stressed else "—"
+
+    now_kst = datetime.now(tz=KST).strftime("%Y-%m-%d %H:%M KST")
+    trigger_type = "🔴 신규 진입" if was_false else "🔴 지속 (24h 경과)"
+
+    message = (
+        f"🚨 <b>[Inverse Turkey Alert]</b> {trigger_type}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"● 시각: {now_kst}\n"
+        f"● TMRS: <b>{total:.1f}점</b>\n"
+        f"\n"
+        f"● Layer 1 (Deep):   {l1:.1f} / 45  ({l1_norm*100:.0f}%)\n"
+        f"● Layer 2 (Middle): {l2:.1f} / 30  ({l2_norm*100:.0f}%)\n"
+        f"● Layer 3 (Surface): {l3:.1f} / 15  ({l3_norm*100:.0f}%)\n"
+        f"\n"
+        f"● L1+L2 평균: <b>{l12_avg:.2f}</b>  (트리거 임계 ≥ 0.40)\n"
+        f"● L3 정규화:  <b>{l3_norm:.2f}</b>  (트리거 임계 ≤ 0.25)\n"
+        f"\n"
+        f"● Stress 지표: {stressed_str}\n"
+        f"\n"
+        f"⚠️ 자금·신용시장에서 stress 누적 중, 주식시장은 아직 평온.\n"
+        f"   표면에 드러나지 않은 위험이 내재된 상태입니다.\n"
+        f"🔗 <a href=\"{_dashboard_url()}\">대시보드 확인</a>"
+    )
+
+    sent = send_raw(message)
+    if sent:
+        _cooldown[_COOLDOWN_KEY] = datetime.now(tz=KST)
+        log.info(f"[Inverse Turkey] 알람 발송 완료 (L12={l12_avg:.2f}, L3={l3_norm:.2f})")
+    return sent
