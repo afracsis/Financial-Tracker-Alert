@@ -432,6 +432,19 @@ def init_db():
 
     log.info("Stage 1 신규 테이블 준비 완료 (single_b_oas, ig_oas, lqd_prices)")
 
+    # ── Stage 2: HYG ETF 가격 테이블 ─────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hyg_prices (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            date             TEXT    NOT NULL UNIQUE,
+            close_price      REAL    NOT NULL,
+            daily_change_pct REAL,
+            fetched_at       TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hyg_prices_date ON hyg_prices(date)")
+    log.info("Stage 2 신규 테이블 준비 완료 (hyg_prices)")
+
     conn.commit()
     conn.close()
 
@@ -673,6 +686,35 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
             name="LQD 일간 변화율", layer=2, cap=2, value=v, unit="%",
             tier=_tier(-v, [(0.5,"normal"), (1.0,"watch"), (2.0,"stress"), (None,"crisis")]),
         )
+
+    # 2-f. HYG 일간 변화율 (%) — cap 4pt  [Stage 2 신규]
+    # v1.0 카테고리 3.5.3: >-0.3% normal / -0.3~-0.7% watch / -0.7~-1.5% stress / <-1.5% crisis
+    # Direction: inverse (음수가 클수록 stress → 값 부호 반전하여 _tier 적용)
+    hyg_row = conn.execute(
+        "SELECT daily_change_pct FROM hyg_prices WHERE daily_change_pct IS NOT NULL ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    if hyg_row and hyg_row["daily_change_pct"] is not None:
+        v = hyg_row["daily_change_pct"]
+        inds["hyg_daily"] = dict(
+            name="HYG 일간 변화율", layer=2, cap=4, value=v, unit="%",
+            tier=_tier(-v, [(0.3,"normal"), (0.7,"watch"), (1.5,"stress"), (None,"crisis")]),
+        )
+
+    # 2-g. HYG 5일 변화율 (%) — cap 3pt  [Stage 2 신규]
+    # v1.0 카테고리 3.5.3: <1% normal / 1~2.5% watch / 2.5~5% stress / >5% crisis (절댓값 기준)
+    # Direction: inverse (5일간 낙폭이 클수록 stress)
+    hyg_5d_rows = conn.execute(
+        "SELECT close_price FROM hyg_prices ORDER BY date DESC LIMIT 6"
+    ).fetchall()
+    if len(hyg_5d_rows) >= 6:
+        latest_close = hyg_5d_rows[0]["close_price"]
+        close_5ago   = hyg_5d_rows[5]["close_price"]
+        if close_5ago and close_5ago > 0:
+            chg_5d = round((latest_close / close_5ago - 1) * 100, 4)
+            inds["hyg_5day"] = dict(
+                name="HYG 5일 변화율", layer=2, cap=3, value=chg_5d, unit="%",
+                tier=_tier(-chg_5d, [(1.0,"normal"), (2.5,"watch"), (5.0,"stress"), (None,"crisis")]),
+            )
 
     # ── Layer 3: 주식·변동성 (Surface) — 15pt 상한 ───────────────
 
@@ -1066,6 +1108,15 @@ def start_scheduler() -> BackgroundScheduler:
         **_JOB_DEFAULTS,
     )
     log.info("[LQD] 스케줄 등록: 매일 7,22시 20분 KST")
+
+    # Stage 2: HYG ETF (yfinance, 매일 07:20 / 22:20 KST)
+    scheduler.add_job(
+        refresh_hyg,
+        trigger=CronTrigger(hour="7,22", minute="20", timezone="Asia/Seoul"),
+        id="refresh_hyg",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[HYG] 스케줄 등록: 매일 7,22시 20분 KST")
 
     scheduler.start()
     log.info("스케줄러 시작 완료 (misfire_grace=5분, coalesce=True, max_instances=1)")
@@ -1549,6 +1600,62 @@ def refresh_lqd() -> int:
     except Exception as exc:
         log.error(f"[LQD] 수집 오류: {exc}")
         telegram_alerts.record_error("lqd_prices", str(exc))
+        return 0
+
+
+def refresh_hyg() -> int:
+    """HYG ETF 일간 가격 + 변화율 수집 → DB 저장 (yfinance).
+
+    v1.0 문서 카테고리 3.5.3 / Layer 2 가중 4pt
+    임계(daily_change_pct): Normal >-0.3% / Watch -0.3~-0.7% / Stress -0.7~-1.5% / Crisis <-1.5%
+    Direction: inverse (음수가 클수록 stress)
+    5day 변화율 (cap 3pt): Normal <1% / Watch 1~2.5% / Stress 2.5~5% / Crisis >5% (절댓값 기준)
+    """
+    if not _yf_available:
+        log.warning("[HYG] yfinance 미설치 — 스킵")
+        return 0
+    try:
+        import yfinance as yf
+        t = yf.Ticker("HYG")
+        conn_chk = get_db()
+        existing = conn_chk.execute("SELECT COUNT(*) FROM hyg_prices").fetchone()[0]
+        conn_chk.close()
+        if existing == 0:
+            log.info("[HYG] DB 비어있음 — 이력 로드 중 (2022-01-01 ~)")
+            hist = t.history(start="2022-01-01", interval="1d")
+        else:
+            hist = t.history(period="10d")
+        if hist.empty:
+            log.warning("[HYG] yfinance 응답 없음")
+            telegram_alerts.record_error("hyg_prices", "yfinance HYG 응답 없음")
+            return 0
+
+        conn  = get_db()
+        saved = 0
+        prev_close = None
+        for ts, row in hist.iterrows():
+            d     = ts.date().isoformat()
+            close = round(float(row["Close"]), 4)
+            chg_pct = None
+            if prev_close is not None and prev_close > 0:
+                chg_pct = round((close - prev_close) / prev_close * 100, 4)
+            prev_close = close
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO hyg_prices
+                   (date, close_price, daily_change_pct, fetched_at)
+                   VALUES (?,?,?,?)""",
+                (d, close, chg_pct, now_kst_str()),
+            )
+            saved += cur.rowcount
+
+        conn.commit()
+        conn.close()
+        log.info(f"[HYG] {saved}건 저장")
+        telegram_alerts.record_success("hyg_prices")
+        return saved
+    except Exception as exc:
+        log.error(f"[HYG] 수집 오류: {exc}")
+        telegram_alerts.record_error("hyg_prices", str(exc))
         return 0
 
 
@@ -2095,6 +2202,8 @@ def get_data():
         "single_b_oas":  _credit_latest("single_b_oas", "oas_bp"),
         "ig_oas":        _credit_latest("ig_oas", "oas_bp"),
         "lqd":           _credit_latest_lqd(),
+        # Stage 2: HYG ETF
+        "hyg":           _credit_latest_hyg(),
         # 공통
         "server_time_kst": now_kst_str(),
     })
@@ -2132,6 +2241,27 @@ def _credit_latest_lqd() -> dict | None:
     history = [{"date": r["date"], "close": r["close_price"], "change_pct": r["daily_change_pct"]}
                for r in reversed(rows)]
     return {"latest": latest, "history": history}
+
+
+def _credit_latest_hyg() -> dict | None:
+    """HYG 최신값 + 일간 변화율 + 5일 변화율 포함 dict 반환."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT date, close_price, daily_change_pct FROM hyg_prices ORDER BY date DESC LIMIT 35"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    latest = {"date": rows[0]["date"], "close": rows[0]["close_price"], "change_pct": rows[0]["daily_change_pct"]}
+    chg_5day = None
+    if len(rows) >= 6:
+        c0 = rows[0]["close_price"]
+        c5 = rows[5]["close_price"]
+        if c5 and c5 > 0:
+            chg_5day = round((c0 / c5 - 1) * 100, 4)
+    history = [{"date": r["date"], "close": r["close_price"], "change_pct": r["daily_change_pct"]}
+               for r in reversed(rows)]
+    return {"latest": latest, "change_5day": chg_5day, "history": history}
 
 
 @app.route("/signal-desk")
@@ -3143,7 +3273,13 @@ def _startup_full_refresh() -> None:
     except Exception as exc:
         log.error(f"[Startup] LQD 갱신 오류: {exc}")
 
-    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 1 포함)")
+    # 13. HYG ETF 초기 로드 (Stage 2)
+    try:
+        refresh_hyg()
+    except Exception as exc:
+        log.error(f"[Startup] HYG 갱신 오류: {exc}")
+
+    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 2 포함)")
 
 
 def _startup() -> None:

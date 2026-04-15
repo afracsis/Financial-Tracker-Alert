@@ -836,9 +836,9 @@
         </div>
     </div>
 
-    <!-- Stage 1: Layer 2 신규 지표 카드 (Single-B OAS / IG OAS / LQD) -->
-    <div class="section-label" style="margin-top:20px;">OAS · ETF 지표 <span style="font-size:10px;color:#68d391;font-weight:normal;">Stage 1 신규</span></div>
-    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;">
+    <!-- Stage 1/2: Layer 2 신규 지표 카드 (Single-B OAS / IG OAS / LQD / HYG) -->
+    <div class="section-label" style="margin-top:20px;">OAS · ETF 지표 <span style="font-size:10px;color:#68d391;font-weight:normal;">Stage 1–2 신규</span></div>
+    <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:12px;">
 
         <!-- Single-B OAS -->
         <div class="nyfed-card" id="credit-sb-card">
@@ -865,6 +865,28 @@
             <div class="nyfed-value loading" id="credit-lqd-val">—<span class="nyfed-unit">%</span></div>
             <div class="nyfed-sub" id="credit-lqd-sub">로딩 중...</div>
             <div style="font-size:10px;color:#718096;margin-top:4px;">임계: -0.5 / -1.0 / -2.0 %</div>
+        </div>
+    </div>
+
+    <!-- Stage 2: HYG ETF 카드 -->
+    <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:12px;margin-bottom:20px;">
+
+        <!-- HYG ETF 일간 변화율 -->
+        <div class="nyfed-card" id="credit-hyg-daily-card">
+            <div class="nyfed-card-accent" style="background:#b794f4;"></div>
+            <div class="nyfed-label">HYG 일간 변화율 <span style="font-size:9px;color:#718096;">Layer 2 · 4pt · Stage 2</span></div>
+            <div class="nyfed-value loading" id="credit-hyg-daily-val">—<span class="nyfed-unit">%</span></div>
+            <div class="nyfed-sub" id="credit-hyg-daily-sub">로딩 중...</div>
+            <div style="font-size:10px;color:#718096;margin-top:4px;">임계: -0.3 / -0.7 / -1.5 %</div>
+        </div>
+
+        <!-- HYG ETF 5일 변화율 -->
+        <div class="nyfed-card" id="credit-hyg-5day-card">
+            <div class="nyfed-card-accent" style="background:#d6bcfa;"></div>
+            <div class="nyfed-label">HYG 5일 변화율 <span style="font-size:9px;color:#718096;">Layer 2 · 3pt · Stage 2</span></div>
+            <div class="nyfed-value loading" id="credit-hyg-5day-val">—<span class="nyfed-unit">%</span></div>
+            <div class="nyfed-sub" id="credit-hyg-5day-sub">로딩 중...</div>
+            <div style="font-size:10px;color:#718096;margin-top:4px;">임계: ±1.0 / ±2.5 / ±5.0 %</div>
         </div>
     </div>
 
@@ -1638,6 +1660,38 @@ async function loadData() {
         } else {
             document.getElementById('credit-lqd-sub').textContent = '데이터 없음';
             document.getElementById('credit-lqd-val').classList.remove('loading');
+        }
+
+        // ── Stage 2: HYG 일간 변화율 카드 렌더링 ───────────────
+        const hyg = data.hyg;
+        if (hyg && hyg.latest && hyg.latest.change_pct !== null) {
+            const v = hyg.latest.change_pct;
+            const tier = v > -0.3 ? {label:'정상',cls:'#68d391'} : v > -0.7 ? {label:'주의',cls:'#f6ad55'} : v > -1.5 ? {label:'경계',cls:'#fc8181'} : {label:'위기',cls:'#fc8181'};
+            const sign = v >= 0 ? '+' : '';
+            document.getElementById('credit-hyg-daily-val').innerHTML = sign + v.toFixed(2) + '<span class="nyfed-unit">%</span>';
+            document.getElementById('credit-hyg-daily-val').classList.remove('loading');
+            document.getElementById('credit-hyg-daily-card').style.borderLeftColor = tier.cls;
+            document.getElementById('credit-hyg-daily-sub').innerHTML =
+                `<span style="color:${tier.cls};font-weight:600;">${tier.label}</span> · 종가 $${hyg.latest.close.toFixed(2)} · ${hyg.latest.date}`;
+        } else {
+            document.getElementById('credit-hyg-daily-sub').textContent = '데이터 없음';
+            document.getElementById('credit-hyg-daily-val').classList.remove('loading');
+        }
+
+        // ── Stage 2: HYG 5일 변화율 카드 렌더링 ────────────────
+        if (hyg && hyg.change_5day !== null && hyg.change_5day !== undefined) {
+            const v5 = hyg.change_5day;
+            const av = Math.abs(v5);
+            const tier5 = av < 1.0 ? {label:'정상',cls:'#68d391'} : av < 2.5 ? {label:'주의',cls:'#f6ad55'} : av < 5.0 ? {label:'경계',cls:'#fc8181'} : {label:'위기',cls:'#fc8181'};
+            const sign5 = v5 >= 0 ? '+' : '';
+            document.getElementById('credit-hyg-5day-val').innerHTML = sign5 + v5.toFixed(2) + '<span class="nyfed-unit">%</span>';
+            document.getElementById('credit-hyg-5day-val').classList.remove('loading');
+            document.getElementById('credit-hyg-5day-card').style.borderLeftColor = tier5.cls;
+            document.getElementById('credit-hyg-5day-sub').innerHTML =
+                `<span style="color:${tier5.cls};font-weight:600;">${tier5.label}</span> · 5거래일 누적`;
+        } else {
+            document.getElementById('credit-hyg-5day-sub').textContent = '데이터 없음 (6일 미만)';
+            document.getElementById('credit-hyg-5day-val').classList.remove('loading');
         }
 
     } catch(e) {
