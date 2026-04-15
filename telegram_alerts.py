@@ -281,6 +281,7 @@ def alert_inverse_turkey(
     l1: float, l2: float, l3: float,
     total: float,
     inds: dict,
+    is_test: bool = False,
 ) -> bool:
     """
     Inverse Turkey 패턴 진입 시 텔레그램 알람 발송.
@@ -293,6 +294,9 @@ def alert_inverse_turkey(
     De-duplication:
       - 동일 True 상태에서 24시간 내 재발송 금지
       - True→False 전환 시 상태 리셋
+
+    Args:
+        is_test: True 시 메시지에 [TEST] prefix 추가, dedup 우회 안 함
     """
     _COOLDOWN_KEY = "inverse_turkey"
 
@@ -329,9 +333,10 @@ def alert_inverse_turkey(
 
     now_kst = datetime.now(tz=KST).strftime("%Y-%m-%d %H:%M KST")
     trigger_type = "🔴 신규 진입" if was_false else "🔴 지속 (24h 경과)"
+    test_prefix  = "🧪 <b>[TEST]</b> " if is_test else ""
 
     message = (
-        f"🚨 <b>[Inverse Turkey Alert]</b> {trigger_type}\n"
+        f"{test_prefix}🚨 <b>[Inverse Turkey Alert]</b> {trigger_type}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
         f"● 시각: {now_kst}\n"
         f"● TMRS: <b>{total:.1f}점</b>\n"
