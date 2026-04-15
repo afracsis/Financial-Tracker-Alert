@@ -31,6 +31,8 @@ FILES = [
     "portfolio_scraper.py",
     "jpy_scraper.py",
     "gunicorn.conf.py",
+    "sync_from_github.py",
+    "scripts/test_telegram_alert.py",
     "templates/index.html",
     "templates/login.html",
 ]
