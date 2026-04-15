@@ -1506,8 +1506,18 @@ def refresh_lqd() -> int:
         return 0
     try:
         import yfinance as yf
-        t    = yf.Ticker("LQD")
-        hist = t.history(period="3mo")
+        t = yf.Ticker("LQD")
+
+        # DB 비어있으면 3년 이력 전체 로드, 있으면 최근 10일만 갱신
+        conn_chk = get_db()
+        existing = conn_chk.execute("SELECT COUNT(*) FROM lqd_prices").fetchone()[0]
+        conn_chk.close()
+        if existing == 0:
+            log.info("[LQD] DB 비어있음 — 이력 로드 중 (2022-01-01 ~)")
+            hist = t.history(start="2022-01-01", interval="1d")
+        else:
+            hist = t.history(period="10d")
+
         if hist.empty:
             log.warning("[LQD] yfinance 응답 없음")
             telegram_alerts.record_error("lqd_prices", "yfinance LQD 응답 없음")
