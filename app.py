@@ -445,6 +445,23 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_hyg_prices_date ON hyg_prices(date)")
     log.info("Stage 2 신규 테이블 준비 완료 (hyg_prices)")
 
+    # ── Hotfix migration: BAMLH0A2HYBEY(Effective Yield) → BAMLH0A2HYB(OAS) ─
+    # HYBEY는 국채금리+스프레드 합계(≈7%)이므로 bp 변환 시 700+bp — 항상 Crisis.
+    # 올바른 HYB(OAS)는 현재 3.19% = 319bp (Normal).
+    # 감지 조건: oas_bp > 650 레코드 삭제 (HYBEY 범위, 정상 OAS 이 범위 거의 없음)
+    try:
+        wrong_count = conn.execute(
+            "SELECT COUNT(*) FROM single_b_oas WHERE oas_bp > 650"
+        ).fetchone()[0]
+        if wrong_count > 0:
+            conn.execute("DELETE FROM single_b_oas WHERE oas_bp > 650")
+            log.warning(
+                f"[Single-B OAS] BAMLH0A2HYBEY 오류 데이터 {wrong_count}건 삭제 "
+                "(Effective Yield → OAS 시리즈 마이그레이션)"
+            )
+    except Exception:
+        pass  # 최초 실행 시 테이블 없을 수 있음 (무시)
+
     conn.commit()
     conn.close()
 
@@ -1494,10 +1511,14 @@ def _upsert_oas_table(table: str, rows: list, value_key: str = "oas_bp") -> int:
 
 
 def refresh_single_b_oas() -> int:
-    """FRED BAMLH0A2HYBEY (Single-B US HY OAS) 수집 → DB 저장.
+    """FRED BAMLH0A2HYB (Single-B US HY OAS) 수집 → DB 저장.
 
     v1.0 문서 카테고리 3.5.1 / Layer 2 가중 7pt
     임계: Normal <350bp / Watch 350-450bp / Stress 450-600bp / Crisis >600bp
+
+    주의: BAMLH0A2HYBEY (Effective Yield) 와 혼동 금지.
+    - BAMLH0A2HYB  = OAS (스프레드만, ~3.19% = 319bp) ← 올바른 시리즈
+    - BAMLH0A2HYBEY = Effective Yield (국채금리+OAS 합계, ~7.08% = 708bp) ← 오류
     """
     conn = get_db()
     count = conn.execute("SELECT COUNT(*) FROM single_b_oas").fetchone()[0]
@@ -1507,7 +1528,7 @@ def refresh_single_b_oas() -> int:
     if count == 0:
         log.info("[Single-B OAS] DB 비어있음 — 이력 로드 중...")
 
-    rows = fetch_fred_observations("BAMLH0A2HYBEY", limit=limit)
+    rows = fetch_fred_observations("BAMLH0A2HYB", limit=limit)
     if rows:
         saved = _upsert_oas_table("single_b_oas", rows)
         if count == 0:
@@ -1515,7 +1536,7 @@ def refresh_single_b_oas() -> int:
         telegram_alerts.record_success("single_b_oas")
         return saved
     log.warning("[Single-B OAS] FRED 응답 없음")
-    telegram_alerts.record_error("single_b_oas", "FRED BAMLH0A2HYBEY 응답 없음")
+    telegram_alerts.record_error("single_b_oas", "FRED BAMLH0A2HYB 응답 없음")
     return 0
 
 
