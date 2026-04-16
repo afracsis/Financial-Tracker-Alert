@@ -604,6 +604,50 @@ _TIER_META  = {
     "crisis": {"ko": "위기",     "color": "#9b2c2c", "emoji": "🚨"},
 }
 
+# ── 지표별 해석 텍스트 (Signal Desk 상세 카드용) ─────────────────
+# v1.0 통합문서 카테고리 3.4–3.6 요약
+INDICATOR_INTERPRETATIONS: dict[str, str] = {
+    "sofr_effr":      "담보(SOFR)·무담보(EFFR) 금리 괴리. 확대 시 단기 자금시장 스트레스 — 은행 간 신뢰 약화 신호.",
+    "cp_aa_spread":   "A2/P2 CP − AA 금리차. 확대 시 비은행 기업의 단기 조달 비용 급등 — CP 시장 경색.",
+    "rrp":            "Fed RRP 잔고. 소진 시 시스템 유동성 완충재 고갈. QT로 구조적 감소 중 — 유동성 취약성 증가.",
+    "sofr_term":      "SOFR 90일 평균 − 당일 SOFR 괴리. 텀 프리미엄 확대 = 중기 자금 조달 스트레스 선행.",
+    "discount_window": "Fed 긴급 창구 이용액. 급증 시 은행 시스템의 구조적 자금 조달 문제 — 최후 수단 사용.",
+    "tga":            "재무부 현금 계좌 주간 변화. 급감 시 부채한도 위기 또는 재정 긴장 신호.",
+    "hy_oas":         "고수익채권 OAS. 상승 시 Credit 시장 전반의 위험 회피 심화 — Funding stress 의 Credit 전이 신호.",
+    "cp_effr":        "[보류 중 · cap=0] A2/P2 CP − EFFR 괴리. Stage 2.2 에서 A2/P2-AA 스프레드와 중복성 검토 후 정식 처리 예정.",
+    "single_b_oas":   "Single-B 등급 OAS. HY 중 가장 위험한 등급. Credit 위험의 가장 민감한 선행 지표 — 319bp 이하는 정상.",
+    "ig_oas":         "투자등급 OAS. 상승 시 우량 기업까지 Credit 스트레스 전이 — 최후 단계의 신호.",
+    "lqd_daily":      "LQD 일간 변화율 (투자등급 채권 ETF). 급락 시 기관 투자자의 유동성 확보 매도 — IG 시장 경색.",
+    "hyg_daily":      "HYG 일간 변화율 (HY 채권 ETF). 급락 시 HY 시장의 실시간 유동성 압박 — Credit 위험 실시간 탐지.",
+    "hyg_5day":       "HYG 5거래일 누적 변화율. 단기 노이즈를 줄인 HY 채권 시장 추세 — hyg_daily 의 확증 지표.",
+    "move":           "채권 내재 변동성. 상승 시 금리 불확실성 증가 — MOVE/VIX 비율과 함께 Inverse Turkey 판별에 사용.",
+    "vix":            "주식 내재 변동성. 자금·신용 스트레스 대비 낮으면 Inverse Turkey 패턴 (시장 미반응 위험).",
+    "skew":           "CBOE SKEW. 상승 시 꼬리 위험(tail risk) 프리미엄 급등 — 블랙스완 헤지 수요 증가.",
+    "move_vix_ratio": "MOVE/VIX 비율. 상승 시 채권 스트레스가 주식 시장 선행 — Inverse Turkey 의 핵심 전조 지표.",
+}
+
+# ── 지표별 임계값 설명 (단계별 텍스트, 상세 카드 표시용) ─────────
+INDICATOR_THRESHOLDS: dict[str, list] = {
+    # [normal_range, watch_range, stress_range, crisis_range]
+    "sofr_effr":      ["< 0bp",     "0 ~ 3bp",    "3 ~ 8bp",     "> 8bp"],
+    "cp_aa_spread":   ["< 20bp",    "20 ~ 35bp",  "35 ~ 50bp",   "> 50bp"],
+    "rrp":            ["> $100B",   "$50 ~ 100B",  "$10 ~ 50B",   "< $10B"],
+    "sofr_term":      ["< 5bp",     "5 ~ 15bp",   "15 ~ 30bp",   "> 30bp"],
+    "discount_window":["$0",        "< $5,000M",  "< $50,000M",  "> $50,000M"],
+    "tga":            ["< |$30B|",  "|$30 ~ 75B|","| $75 ~ 150B|","> |$150B|"],
+    "hy_oas":         ["< 3.5%",   "3.5 ~ 5.0%", "5.0 ~ 7.0%",  "> 7.0%"],
+    "cp_effr":        ["< 0.30pp", "0.30 ~ 0.60pp","0.60 ~ 1.00pp","> 1.00pp"],
+    "single_b_oas":   ["< 350bp",  "350 ~ 450bp","450 ~ 600bp",  "> 600bp"],
+    "ig_oas":         ["< 100bp",  "100 ~ 130bp","130 ~ 180bp",  "> 180bp"],
+    "lqd_daily":      ["> -0.5%",  "-0.5 ~ -1.0%","-1.0 ~ -2.0%","< -2.0%"],
+    "hyg_daily":      ["> -0.3%",  "-0.3 ~ -0.7%","-0.7 ~ -1.5%","< -1.5%"],
+    "hyg_5day":       ["< ±1.0%",  "±1.0 ~ 2.5%","±2.5 ~ 5.0%",  "> ±5.0%"],
+    "move":           ["< 80",     "80 ~ 100",   "100 ~ 150",    "> 150"],
+    "vix":            ["< 20",     "20 ~ 30",    "30 ~ 45",      "> 45"],
+    "skew":           ["< 130",    "130 ~ 145",  "145 ~ 160",    "> 160"],
+    "move_vix_ratio": ["< 4",      "4 ~ 5",      "5 ~ 6",        "> 6"],
+}
+
 
 def _tier(value: float, bounds: list) -> str:
     """bounds: [(upper_exclusive, tier), ..., (None, 'crisis')] 낮은 위험 → 높은 위험 순"""
@@ -2327,7 +2371,7 @@ def _credit_latest_hyg() -> dict | None:
 
 @app.route("/signal-desk")
 def signal_desk_data():
-    """Signal Desk: 최신 TMRS 점수 + 이력 반환."""
+    """Signal Desk: 최신 TMRS 점수 + 이력 + prev/week snapshot 반환."""
     conn = get_db()
     latest = conn.execute(
         "SELECT * FROM tmrs_scores ORDER BY calculated_at DESC LIMIT 1"
@@ -2335,10 +2379,36 @@ def signal_desk_data():
     history = conn.execute(
         "SELECT calculated_at, total_score, total_tier FROM tmrs_scores ORDER BY calculated_at DESC LIMIT 30"
     ).fetchall()
+    # prev/week snapshot 추출 — tmrs_scores 이력에서 날짜 기준 탐색
+    recent_snaps = conn.execute(
+        "SELECT calculated_at, snapshot FROM tmrs_scores ORDER BY calculated_at DESC LIMIT 60"
+    ).fetchall()
     conn.close()
 
+    prev_snapshot: dict = {}
+    week_snapshot: dict = {}
+    if latest and recent_snaps:
+        latest_date = latest["calculated_at"][:10]
+        # prev: 가장 최근의 다른 날 snapshot
+        for row in recent_snaps[1:]:
+            if row["calculated_at"][:10] != latest_date:
+                prev_snapshot = json.loads(row["snapshot"] or "{}")
+                break
+        # week: 7일 전 날짜에 가장 가까운 snapshot
+        try:
+            target = (datetime.strptime(latest_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+            best, best_diff = {}, None
+            for row in recent_snaps:
+                d = abs((datetime.strptime(row["calculated_at"][:10], "%Y-%m-%d")
+                         - datetime.strptime(target, "%Y-%m-%d")).days)
+                if best_diff is None or d < best_diff:
+                    best_diff, best = d, json.loads(row["snapshot"] or "{}")
+            week_snapshot = best
+        except Exception:
+            pass
+
     if latest:
-        tiers = json.loads(latest["indicator_tiers"] or "{}")
+        tiers    = json.loads(latest["indicator_tiers"] or "{}")
         snapshot = json.loads(latest["snapshot"] or "{}")
         result = {
             "total_score":    latest["total_score"],
@@ -2351,14 +2421,49 @@ def signal_desk_data():
             "interpretation": latest["interpretation"],
             "calculated_at":  latest["calculated_at"],
             "trigger":        latest["trigger"],
-            "indicator_tiers": tiers,
-            "snapshot":       snapshot,
-            "tier_meta":      _TIER_META,
-            "history":        [dict(r) for r in history],
+            "indicator_tiers":   tiers,
+            "snapshot":          snapshot,
+            "prev_snapshot":     prev_snapshot,
+            "week_snapshot":     week_snapshot,
+            "tier_meta":         _TIER_META,
+            "interpretations":   INDICATOR_INTERPRETATIONS,
+            "thresholds":        INDICATOR_THRESHOLDS,
+            "history":           [dict(r) for r in history],
         }
     else:
         result = {"total_score": None, "calculated_at": None, "history": []}
 
+    return jsonify(result)
+
+
+@app.route("/indicator/<key>/timeseries")
+def indicator_timeseries(key: str):
+    """단일 지표의 30일 시계열 반환 — tmrs_scores.snapshot JSON 이력에서 추출."""
+    days = request.args.get("days", 30, type=int)
+    days = max(7, min(90, days))
+
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT calculated_at, snapshot FROM tmrs_scores ORDER BY calculated_at DESC LIMIT ?",
+        (days * 4,),   # 하루 여러 번 계산 가능하므로 버퍼
+    ).fetchall()
+    conn.close()
+
+    # 날짜별 중복 제거 (가장 최신 1건 유지)
+    seen: dict = {}
+    for row in rows:
+        date = row["calculated_at"][:10]
+        if date not in seen:
+            snap = json.loads(row["snapshot"] or "{}")
+            if key in snap:
+                seen[date] = {
+                    "date":  date,
+                    "ts":    row["calculated_at"],
+                    "value": snap[key].get("value"),
+                    "tier":  snap[key].get("tier"),
+                }
+
+    result = sorted(seen.values(), key=lambda r: r["date"])[-days:]
     return jsonify(result)
 
 

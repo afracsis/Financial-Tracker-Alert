@@ -209,6 +209,57 @@
         .alert-banner.hidden { display: none; }
         .alert-banner .icon { font-size: 20px; }
 
+        /* ── Indicator Status 재설계 (Stage 2.0) ──────────────── */
+        .ind-section-hdr {
+            font-size: 10px; font-weight: 700; letter-spacing: 1.5px;
+            text-transform: uppercase; color: #4a5568;
+            padding: 8px 0 5px; margin-top: 10px;
+            border-top: 1px solid #2d3748;
+        }
+        .ind-section-hdr:first-child { border-top: none; margin-top: 0; }
+        .ind-detail {
+            border: 1px solid #2d3748; border-radius: 8px;
+            margin-bottom: 4px; overflow: hidden;
+            transition: border-color .2s;
+        }
+        .ind-detail[open] { border-color: #4a5568; }
+        .ind-summary {
+            display: flex; align-items: center; gap: 6px;
+            padding: 7px 10px; cursor: pointer; list-style: none;
+            user-select: none;
+        }
+        .ind-summary:hover { background: rgba(255,255,255,0.03); }
+        .ind-summary::-webkit-details-marker { display: none; }
+        .ind-summary::marker { display: none; }
+        .layer-badge {
+            font-size: 9px; font-weight: 700; padding: 1px 5px;
+            border-radius: 4px; flex-shrink: 0; letter-spacing: 0.3px;
+        }
+        .ind-card-body {
+            padding: 10px 12px 12px; border-top: 1px solid #2d3748;
+            background: rgba(0,0,0,0.25);
+        }
+        .ind-tier-bar {
+            display: flex; gap: 2px; margin: 8px 0 4px;
+        }
+        .ind-tier-seg {
+            flex: 1; height: 5px; border-radius: 3px; opacity: 0.35;
+        }
+        .ind-tier-seg.active { opacity: 1; }
+        .ind-layer-group > summary {
+            display: flex; align-items: center; gap: 8px;
+            padding: 6px 8px; cursor: pointer; list-style: none;
+            font-size: 11px; color: #718096; border-radius: 6px;
+        }
+        .ind-layer-group > summary:hover { background: rgba(255,255,255,0.03); }
+        .ind-layer-group > summary::-webkit-details-marker { display: none; }
+        .ind-layer-group > summary::marker { display: none; }
+        .ind-layer-group > summary::before {
+            content: '▶'; font-size: 9px; color: #4a5568; margin-right: 2px;
+            transition: transform .2s;
+        }
+        .ind-layer-group[open] > summary::before { transform: rotate(90deg); }
+
         /* ── 차트 ──────────────────────────────────────────────── */
         .chart-section {
             background: #1a1d2e;
@@ -606,17 +657,21 @@
         </div>
     </div>
 
-    <!-- 알람 + 지표 현황 카드 -->
+    <!-- 알람 카드 (Inverse Turkey) -->
     <div style="background:#1a1d2e;border:1px solid #2d3748;border-radius:12px;padding:24px;">
-        <!-- Inverse Turkey -->
-        <div id="sd-inv-turkey" style="border-radius:8px;padding:10px 14px;margin-bottom:16px;font-size:12px;background:#2d3748;color:#718096;">
+        <div id="sd-inv-turkey" style="border-radius:8px;padding:10px 14px;font-size:12px;background:#2d3748;color:#718096;">
             🦃 Inverse Turkey: 미감지
         </div>
-        <!-- 지표 현황 -->
-        <div style="font-size:11px;color:#718096;margin-bottom:10px;letter-spacing:1px;">INDICATOR STATUS</div>
-        <div id="sd-indicators" style="display:flex;flex-direction:column;gap:7px;">
-            <div style="color:#4a5568;font-size:11px;">데이터 로딩 중...</div>
-        </div>
+    </div>
+</div>
+
+<!-- ── INDICATOR STATUS (전폭, 3섹션) ──────────────────────────── -->
+<div style="background:#1a1d2e;border:1px solid #2d3748;border-radius:12px;padding:20px;margin-bottom:20px;">
+    <div style="font-size:11px;font-weight:700;letter-spacing:1.5px;color:#4a5568;text-transform:uppercase;margin-bottom:12px;">
+        INDICATOR STATUS
+    </div>
+    <div id="sd-indicators" style="display:flex;flex-direction:column;">
+        <div style="color:#4a5568;font-size:11px;padding:8px 0;">데이터 로딩 중...</div>
     </div>
 </div>
 
@@ -1840,6 +1895,17 @@ function renderSpreadChart(spreadRecords, thresholdBp) {
     }, { responsive: true, displayModeBar: false });
 }
 
+/// ── Signal Desk: 공통 상수 ──────────────────────────────────
+const SD_TIER_COLOR = { normal:'#68d391', watch:'#f6ad55', stress:'#fc8181', crisis:'#9b2c2c' };
+const SD_TIER_ICON  = { normal:'✓', watch:'⚠', stress:'🔴', crisis:'🚨' };
+const SD_TIER_KO    = { normal:'정상', watch:'주의', stress:'스트레스', crisis:'위기' };
+const SD_LAYER_META = {
+    1: { label:'L1', color:'#4299e1', name:'Funding'   },
+    2: { label:'L2', color:'#9f7aea', name:'Credit'    },
+    3: { label:'L3', color:'#f6ad55', name:'Equity'    },
+};
+const _chartRendered = new Set();
+
 // ── Signal Desk (TMRS) ───────────────────────────────────────
 let signalDeskLoaded = false;
 
@@ -1897,35 +1963,8 @@ function renderSignalDesk(data) {
         itEl.textContent      = '🦃 Inverse Turkey: 미감지';
     }
 
-    // 지표 현황 도트
-    const LAYER_NAME = { 1:'L1', 2:'L2', 3:'L3' };
-    const snap = data.snapshot || {};
-    const tiers = data.indicator_tiers || {};
-    const IND_NAMES = {
-        sofr_effr:    'SOFR-EFFR 스프레드',
-        cp_aa_spread: 'CP 스프레드 (A2/P2−AA)',
-        rrp:          'RRP 잔고',
-        hy_oas:       'HY OAS',
-        cp_effr:      'A2/P2 CP−EFFR',
-        move:         'MOVE Index',
-        vix:          'VIX',
-    };
-    const indEl = document.getElementById('sd-indicators');
-    if (Object.keys(tiers).length === 0) {
-        indEl.innerHTML = '<div style="color:#4a5568;font-size:11px;">지표 데이터 없음</div>';
-    } else {
-        indEl.innerHTML = Object.entries(tiers).map(([k, tier]) => {
-            const color = TIER_COLOR[tier] || '#4a5568';
-            const val   = snap[k] ? snap[k].value : '';
-            const name  = (snap[k] && snap[k].name) ? snap[k].name : (IND_NAMES[k] || k);
-            return `<div style="display:flex;align-items:center;gap:8px;">
-                <span style="width:8px;height:8px;border-radius:50%;background:${color};display:inline-block;flex-shrink:0;"></span>
-                <span style="font-size:11px;color:#a0aec0;flex:1;">${name}</span>
-                <span style="font-size:11px;color:#718096;">${val !== '' ? Number(val).toFixed(2) : '—'}</span>
-                <span style="font-size:10px;color:${color};width:44px;text-align:right;">${TIER_KO[tier]||tier}</span>
-            </div>`;
-        }).join('');
-    }
+    // ── Indicator Status 재설계 ─────────────────────────────────
+    renderIndicatorStatus(data);
 
     // 해석 텍스트
     document.getElementById('sd-interpretation').textContent = data.interpretation || '';
@@ -1936,6 +1975,212 @@ function renderSignalDesk(data) {
     // TMRS 이력 차트
     if (data.history && data.history.length > 0) {
         renderTmrsChart(data.history);
+    }
+}
+
+// ── Indicator Status (3-section redesign, Stage 2.0) ─────────
+function renderIndicatorStatus(data) {
+    const container = document.getElementById('sd-indicators');
+    if (!container) return;
+
+    const snap   = data.snapshot        || {};
+    const prev   = data.prev_snapshot   || {};
+    const week   = data.week_snapshot   || {};
+    const interp = data.interpretations || {};
+    const thresh = data.thresholds      || {};
+
+    const TIER_ORDER = { crisis:0, stress:1, watch:2, normal:3 };
+
+    // Classify: active (cap>0, tier≠normal) | ref (cap===0) | normal by layer
+    const active = [], ref = [];
+    const normalByLayer = { 1:[], 2:[], 3:[] };
+
+    for (const [key, ind] of Object.entries(snap)) {
+        if (ind.cap === 0) {
+            ref.push([key, ind]);
+        } else if (ind.tier !== 'normal') {
+            active.push([key, ind]);
+        } else {
+            const l = ind.layer || 1;
+            if (!normalByLayer[l]) normalByLayer[l] = [];
+            normalByLayer[l].push([key, ind]);
+        }
+    }
+    active.sort((a, b) => (TIER_ORDER[a[1].tier] ?? 3) - (TIER_ORDER[b[1].tier] ?? 3));
+
+    let html = '';
+
+    // Section 1: Active Issues
+    if (active.length > 0) {
+        html += `<div class="ind-section-hdr">⚠️ Active Issues (${active.length})</div>`;
+        for (const [key, ind] of active)
+            html += buildIndicatorCard(key, ind, prev, week, interp, thresh, true);
+    }
+
+    // Section 2: 참고 지표 (cap=0)
+    if (ref.length > 0) {
+        html += `<div class="ind-section-hdr">📊 참고 지표 (cap=0)</div>`;
+        for (const [key, ind] of ref)
+            html += buildIndicatorCard(key, ind, prev, week, interp, thresh, true);
+    }
+
+    // Section 3: Normal by Layer (collapsible, lazy-load)
+    const normalTotal = Object.values(normalByLayer).reduce((s, arr) => s + arr.length, 0);
+    if (normalTotal > 0) {
+        html += `<div class="ind-section-hdr">✓ Normal (${normalTotal})</div>`;
+        const layerNames = { 1:'Layer 1 — Funding', 2:'Layer 2 — Credit', 3:'Layer 3 — Equity' };
+        for (const [layer, inds] of Object.entries(normalByLayer)) {
+            if (inds.length === 0) continue;
+            const lm = SD_LAYER_META[layer] || { label:'L?', color:'#a0aec0' };
+            html += `<details class="ind-layer-group" data-layer="${layer}">`;
+            html += `<summary><span style="color:${lm.color};font-weight:700;">${layerNames[layer] || 'Layer '+layer}</span><span style="color:#4a5568;">&nbsp;(${inds.length})</span></summary>`;
+            html += `<div style="padding:4px 0 4px 8px;">`;
+            for (const [key, ind] of inds)
+                html += buildIndicatorCard(key, ind, prev, week, interp, thresh, false);
+            html += `</div></details>`;
+        }
+    }
+
+    if (!html) {
+        html = '<div style="color:#4a5568;font-size:11px;padding:8px 0;">표시할 지표 없음</div>';
+    }
+
+    container.innerHTML = html;
+
+    // Preload charts for active + ref (already open)
+    for (const [key] of [...active, ...ref])
+        loadAndRenderChart(key);
+
+    // Lazy-load: when a layer group opens, load all its indicator charts
+    container.querySelectorAll('.ind-layer-group').forEach(group => {
+        group.addEventListener('toggle', () => {
+            if (!group.open) return;
+            group.querySelectorAll('.ind-detail').forEach(card => {
+                const key = card.dataset.key;
+                if (key) loadAndRenderChart(key);
+            });
+        });
+    });
+
+    // Fix Plotly layout when an individual card is toggled open
+    container.querySelectorAll('.ind-detail').forEach(card => {
+        card.addEventListener('toggle', () => {
+            if (!card.open) return;
+            const key    = card.dataset.key;
+            const chartEl = document.getElementById('chart-ind-' + key);
+            if (chartEl && chartEl._fullLayout) {
+                Plotly.relayout(chartEl, { autosize: true });
+            } else if (key) {
+                loadAndRenderChart(key);
+            }
+        });
+    });
+}
+
+function buildIndicatorCard(key, ind, prev, week, interp, thresh, startOpen) {
+    const lm        = SD_LAYER_META[ind.layer] || { label:'?', color:'#a0aec0' };
+    const tc        = SD_TIER_COLOR[ind.tier]  || '#a0aec0';
+    const tierIcon  = SD_TIER_ICON[ind.tier]   || '?';
+    const tierLabel = SD_TIER_KO[ind.tier]     || ind.tier;
+    const valStr    = fmtIndVal(ind.value, ind.unit);
+
+    const prevInd = prev[key];
+    const weekInd = week[key];
+    const prevStr = prevInd ? fmtIndVal(prevInd.value, ind.unit) : '—';
+    const weekStr = weekInd ? fmtIndVal(weekInd.value, ind.unit) : '—';
+    const prevTc  = prevInd ? (SD_TIER_COLOR[prevInd.tier] || '#a0aec0') : '#4a5568';
+    const weekTc  = weekInd ? (SD_TIER_COLOR[weekInd.tier] || '#a0aec0') : '#4a5568';
+
+    // 4-segment tier bar
+    const TIERS = ['normal','watch','stress','crisis'];
+    const tierBar = TIERS.map(t =>
+        `<div class="ind-tier-seg${t===ind.tier?' active':''}" style="background:${SD_TIER_COLOR[t]}" title="${SD_TIER_KO[t]}"></div>`
+    ).join('');
+
+    // Threshold grid
+    let threshHtml = '';
+    const tList = thresh[key];
+    if (tList && tList.length === 4) {
+        threshHtml = '<div style="margin-top:8px;display:grid;grid-template-columns:repeat(4,1fr);gap:3px;font-size:9px;text-align:center;">' +
+            TIERS.map((t, i) =>
+                `<div style="padding:3px 4px;border-radius:4px;background:${SD_TIER_COLOR[t]}22;border:1px solid ${SD_TIER_COLOR[t]}44;">` +
+                `<div style="font-weight:700;color:${SD_TIER_COLOR[t]};">${SD_TIER_KO[t]}</div>` +
+                `<div style="color:${t===ind.tier?SD_TIER_COLOR[t]:'#718096'};margin-top:1px;">${tList[i]}</div>` +
+                `</div>`
+            ).join('') +
+        '</div>';
+    }
+
+    const capStr   = ind.cap > 0 ? `${ind.cap}pt` : 'cap=0';
+    const interpTxt= interp[key] || '';
+    const openAttr = startOpen ? ' open' : '';
+
+    return `
+<details class="ind-detail" data-key="${key}"${openAttr}>
+  <summary class="ind-summary">
+    <span class="layer-badge" style="background:${lm.color}22;color:${lm.color};border:1px solid ${lm.color}44;">${lm.label}</span>
+    <span style="font-size:13px;">${tierIcon}</span>
+    <span style="flex:1;font-size:12px;color:#e2e8f0;">${ind.name}</span>
+    <span style="font-size:12px;font-weight:700;color:${tc};min-width:70px;text-align:right;">${valStr}</span>
+    <span style="font-size:10px;color:${tc};min-width:52px;text-align:right;margin-left:4px;">${tierLabel}</span>
+  </summary>
+  <div class="ind-card-body">
+    <div class="ind-tier-bar">${tierBar}</div>
+    <div style="display:flex;gap:16px;font-size:11px;margin-bottom:6px;flex-wrap:wrap;">
+      <span style="color:#718096;">현재: <strong style="color:${tc};">${valStr}</strong></span>
+      <span style="color:#718096;">전일: <strong style="color:${prevTc};">${prevStr}</strong></span>
+      <span style="color:#718096;">7일전: <strong style="color:${weekTc};">${weekStr}</strong></span>
+      <span style="color:#4a5568;margin-left:auto;">${capStr}</span>
+    </div>
+    ${interpTxt ? `<div style="font-size:11px;color:#718096;line-height:1.55;margin-bottom:6px;">${interpTxt}</div>` : ''}
+    ${threshHtml}
+    <div id="chart-ind-${key}" style="height:100px;margin-top:10px;"></div>
+  </div>
+</details>`;
+}
+
+function fmtIndVal(val, unit) {
+    if (val === null || val === undefined) return '—';
+    const n = typeof val === 'number' ? val : parseFloat(val);
+    if (isNaN(n)) return String(val);
+    const s = Math.abs(n) >= 1000 ? n.toLocaleString('en-US', { maximumFractionDigits: 0 })
+            : Math.abs(n) >= 10   ? n.toFixed(1)
+            :                       n.toFixed(2);
+    return s + (unit ? ' ' + unit : '');
+}
+
+async function loadAndRenderChart(key) {
+    if (_chartRendered.has(key)) return;
+    _chartRendered.add(key);
+
+    const el = document.getElementById('chart-ind-' + key);
+    if (!el) return;
+
+    try {
+        const res  = await fetch(`/indicator/${encodeURIComponent(key)}/timeseries?days=30`);
+        const pts  = await res.json();
+        if (!pts || pts.length === 0) { el.style.display = 'none'; return; }
+
+        const dates  = pts.map(r => r.date);
+        const values = pts.map(r => r.value);
+        const colors = pts.map(r => SD_TIER_COLOR[r.tier] || '#4299e1');
+
+        Plotly.newPlot(el, [{
+            x: dates, y: values,
+            type: 'scatter', mode: 'lines+markers',
+            line:   { color: '#4299e1', width: 1.5 },
+            marker: { color: colors, size: 5 },
+            hovertemplate: '%{x}: %{y}<extra></extra>',
+        }], {
+            paper_bgcolor: 'transparent',
+            plot_bgcolor:  'transparent',
+            margin:  { l: 38, r: 8, t: 4, b: 28 },
+            xaxis:   { showgrid: false, tickfont: { color: '#4a5568', size: 9 }, tickangle: -20 },
+            yaxis:   { showgrid: true, gridcolor: '#2d3748', tickfont: { color: '#718096', size: 9 } },
+            showlegend: false,
+        }, { responsive: true, displayModeBar: false });
+    } catch (_) {
+        el.style.display = 'none';
     }
 }
 
