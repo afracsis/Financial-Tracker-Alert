@@ -33,6 +33,7 @@ FILES = [
     "gunicorn.conf.py",
     "sync_from_github.py",
     "scripts/test_telegram_alert.py",
+    "scripts/analyze_jpy_distribution.py",
     "templates/index.html",
     "templates/login.html",
 ]

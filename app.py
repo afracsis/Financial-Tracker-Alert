@@ -82,6 +82,17 @@ SCORE_VERSION           = "v1.0.1"         # tmrs_scores 레코드 태깅용
 NYFED_BASE = "https://markets.newyorkfed.org/api"
 NYFED_HEADERS = {"Accept": "application/json"}
 
+# ── JPY 만기별 일수 (Stage 2.0 인프라, Stage 2.4 점수화에서 사용) ─
+# 기존 함수 내 로컬 변수(_JPY_PERIOD_DAYS, PERIOD_DAYS)와 동일한 값.
+# 신규 save_jpy_daily_snapshot() 및 analyze_jpy_distribution.py 에서 참조.
+JPY_PERIOD_DAYS: dict[str, int] = {
+    "1M":  30,
+    "3M":  90,
+    "3Y":  1095,
+    "7Y":  2555,
+    "10Y": 3650,
+}
+
 
 # ══════════════════════════════════════════════════════════════
 # 지표 레지스트리
@@ -331,6 +342,26 @@ def init_db():
         conn.execute("ALTER TABLE jpy_swap_data ADD COLUMN spot_rate REAL")
         log.info("jpy_swap_data: spot_rate 컬럼 추가 완료")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_jpy_period_time ON jpy_swap_data(period, fetched_at)")
+
+    # ── Stage 2.0: JPY 일별 Snapshot 테이블 ──────────────────────
+    # 매일 KST 08:00 에 각 만기(1M/3M/3Y/7Y/10Y)의 bid + implied_yield 저장.
+    # 30일 누적 후 Stage 2.4 에서 percentile 기반 임계 확정 및 TMRS 통합.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS jpy_swap_daily (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            date             TEXT    NOT NULL,
+            period           TEXT    NOT NULL,
+            bid              REAL    NOT NULL,
+            spot_rate        REAL    NOT NULL,
+            implied_yield_pct REAL,
+            snapshot_time    TEXT    NOT NULL,
+            UNIQUE(date, period)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jpy_daily_date   ON jpy_swap_daily(date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jpy_daily_period ON jpy_swap_daily(period)")
+    log.info("Stage 2.0 신규 테이블 준비 완료 (jpy_swap_daily)")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS jpy_swap_status (
             id         INTEGER PRIMARY KEY DEFAULT 1,
@@ -1134,6 +1165,15 @@ def start_scheduler() -> BackgroundScheduler:
         **_JOB_DEFAULTS,
     )
     log.info("[HYG] 스케줄 등록: 매일 7,22시 20분 KST")
+
+    # Stage 2.0: JPY 일별 snapshot (매일 08:00 KST — NY 마감 직후, TMRS 배치와 동일 시각)
+    scheduler.add_job(
+        save_jpy_daily_snapshot,
+        trigger=CronTrigger(hour="8", minute="0", timezone="Asia/Seoul"),
+        id="jpy_daily_snapshot",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[JPY Daily] 스케줄 등록: 매일 08:00 KST")
 
     scheduler.start()
     log.info("스케줄러 시작 완료 (misfire_grace=5분, coalesce=True, max_instances=1)")
@@ -2854,6 +2894,77 @@ def _jpy_annualized(bid: float | None, spot: float | None, days: int) -> float |
         return None
 
 
+def save_jpy_daily_snapshot() -> int:
+    """매일 KST 08:00 에 JPY swap 5개 만기의 일별 snapshot 저장.
+
+    Stage 2.0 인프라 구축 — Stage 2.4 에서 30일 누적 후 percentile 임계 확정.
+
+    동작:
+      1. 각 만기(1M/3M/3Y/7Y/10Y)별로 오늘 fetch 된 가장 최근 값 조회
+         (오늘 데이터 없으면 DB 내 가장 최신 값으로 대체 + 경고)
+      2. _jpy_annualized() 로 implied_yield_pct 계산
+      3. jpy_swap_daily 에 INSERT OR REPLACE (같은 날 재실행 시 갱신)
+
+    GPT 가이드 핵심: 분석 시 bid 의 절대값 변화 기준 사용
+      - abs(bid) 감소 = 0 에 가까워짐 = carry 약화 (stress 신호)
+      - abs(bid) 증가 = carry 강화 (normal)
+    Stage 2.4 에서 scripts/analyze_jpy_distribution.py 로 분포 분석.
+    """
+    today_kst = datetime.now(tz=KST).strftime("%Y-%m-%d")
+    now_iso   = datetime.now(tz=KST).isoformat()
+
+    conn = get_db()
+    saved_count    = 0
+    missing_periods: list[str] = []
+
+    for period, days in JPY_PERIOD_DAYS.items():
+        # 오늘 KST 날짜 기준 최신 fetch 먼저 시도
+        row = conn.execute(
+            """SELECT bid, spot_rate FROM jpy_swap_data
+               WHERE period = ? AND date(fetched_at) = ?
+               ORDER BY fetched_at DESC LIMIT 1""",
+            (period, today_kst),
+        ).fetchone()
+
+        if row is None:
+            # 오늘 fetch 없으면 DB 내 가장 최신 값으로 fallback
+            row = conn.execute(
+                """SELECT bid, spot_rate FROM jpy_swap_data
+                   WHERE period = ?
+                   ORDER BY fetched_at DESC LIMIT 1""",
+                (period,),
+            ).fetchone()
+            if row is None:
+                missing_periods.append(period)
+                continue
+            log.debug(f"[JPY Daily] {period}: 오늘 fetch 없음 — 최신 값으로 대체")
+
+        bid       = row["bid"]
+        spot_rate = row["spot_rate"]
+        implied   = _jpy_annualized(bid, spot_rate, days)
+
+        conn.execute(
+            """INSERT OR REPLACE INTO jpy_swap_daily
+               (date, period, bid, spot_rate, implied_yield_pct, snapshot_time)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (today_kst, period, bid, spot_rate, implied, now_iso),
+        )
+        saved_count += 1
+
+    conn.commit()
+    conn.close()
+
+    if missing_periods:
+        log.warning(
+            f"[JPY Daily] {today_kst} snapshot: {saved_count}/5 저장, "
+            f"누락 만기: {missing_periods} (jpy_swap_data 미수집)"
+        )
+    else:
+        log.info(f"[JPY Daily] {today_kst} snapshot 저장 완료 ({saved_count}/5 만기)")
+
+    return saved_count
+
+
 def refresh_jpy() -> None:
     """
     JPY 포워드 레이트 스크래핑 후 DB 저장.
@@ -3300,7 +3411,15 @@ def _startup_full_refresh() -> None:
     except Exception as exc:
         log.error(f"[Startup] HYG 갱신 오류: {exc}")
 
-    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 2 포함)")
+    # 14. JPY 일별 snapshot 초기 저장 (Stage 2.0)
+    # jpy_swap_data 에 데이터가 있는 경우에만 저장 (없으면 0건 저장 + 경고 로그)
+    try:
+        saved = save_jpy_daily_snapshot()
+        log.info(f"[Startup] JPY daily snapshot: {saved}/5 만기 저장")
+    except Exception as exc:
+        log.error(f"[Startup] JPY daily snapshot 오류: {exc}")
+
+    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 2.0 포함)")
 
 
 def _startup() -> None:
