@@ -1,9 +1,0 @@
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
-.env
-*.db
-*.sqlite3
-gunicorn.log
-nohup.out
