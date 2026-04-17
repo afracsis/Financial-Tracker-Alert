@@ -648,6 +648,99 @@ INDICATOR_THRESHOLDS: dict[str, list] = {
     "move_vix_ratio": ["< 4",      "4 ~ 5",      "5 ~ 6",        "> 6"],
 }
 
+# ── Stage 2.1: Coverage Ratio — v1.0 spec 대비 현재 구현 현황 ────────────
+# spec_indicators: v1.0 완성 목표 지표 수
+# spec_max_score:  해당 레이어 만점 (완성 시 기준)
+LAYER_SPEC: dict = {
+    1:           {"spec_indicators": 12, "spec_max_score": 45},
+    2:           {"spec_indicators":  8, "spec_max_score": 30},  # CP-EFFR 포함 8개, Korea CDS 미구현
+    3:           {"spec_indicators":  7, "spec_max_score": 15},
+    "divergence":{"spec_indicators":  5, "spec_max_score": 10},
+}
+
+
+def _coverage_from_snapshot(snapshot: dict) -> dict:
+    """snapshot의 cap/layer 필드로 Layer별 Coverage Ratio 계산.
+
+    Returns dict with layer keys ('1','2','3','divergence','overall'):
+      active   : cap>0 구현 지표 수
+      inactive : cap=0 구현 지표 수 (참고용, coverage 미반영)
+      spec     : v1.0 목표 지표 수
+      pct      : active/spec × 100
+      cap_sum  : 현재 active 지표들의 cap 합계
+      spec_max : v1.0 만점
+    """
+    layer_active:   dict[int, int] = {1: 0, 2: 0, 3: 0}
+    layer_inactive: dict[int, int] = {1: 0, 2: 0, 3: 0}
+    layer_cap_sum:  dict[int, int] = {1: 0, 2: 0, 3: 0}
+
+    for ind in snapshot.values():
+        lyr = ind.get("layer")
+        cap = ind.get("cap", 0)
+        if lyr in (1, 2, 3):
+            if cap > 0:
+                layer_active[lyr]  += 1
+                layer_cap_sum[lyr] += cap
+            else:
+                layer_inactive[lyr] += 1
+
+    result: dict = {}
+    total_weighted = 0.0
+
+    for layer_key, spec in LAYER_SPEC.items():
+        spec_n   = spec["spec_indicators"]
+        spec_max = spec["spec_max_score"]
+
+        if layer_key == "divergence":
+            # move_vix_ratio → Inverse Turkey 로직이 유일 구현 (Layer 3 태깅)
+            # Stage 2.x에서 전용 divergence 지표 추가 시 갱신 예정
+            active   = 1
+            inactive = 0
+            cap_sum  = 3   # move_vix_ratio cap
+        else:
+            active   = layer_active.get(layer_key, 0)
+            inactive = layer_inactive.get(layer_key, 0)
+            cap_sum  = layer_cap_sum.get(layer_key, 0)
+
+        pct = round(active / spec_n * 100, 1) if spec_n > 0 else 0.0
+        result[str(layer_key)] = {
+            "active":   active,
+            "inactive": inactive,
+            "spec":     spec_n,
+            "pct":      pct,
+            "cap_sum":  cap_sum,
+            "spec_max": spec_max,
+        }
+        total_weighted += (active / spec_n * spec_max) if spec_n > 0 else 0.0
+
+    spec_max_total = sum(s["spec_max_score"] for s in LAYER_SPEC.values())
+    result["overall"] = round(total_weighted / spec_max_total * 100, 1) if spec_max_total else 0.0
+    return result
+
+
+def _normalized_score(snapshot: dict, raw_total: float) -> dict:
+    """현재 활성(cap>0) 지표들의 cap 합계 기준 정규화 점수 반환.
+
+    normalized = (raw_total / max_achievable) × 100
+    해석 등급은 normalized 기준으로 적용 (정상:20 / 주의:40 / 스트레스:65 임계 동일).
+    """
+    max_achievable = sum(
+        ind.get("cap", 0) for ind in snapshot.values() if ind.get("cap", 0) > 0
+    )
+    if max_achievable <= 0:
+        return {"normalized": 0.0, "max_achievable": 0, "raw": raw_total,
+                "normalized_tier": "normal"}
+    normalized = round(raw_total / max_achievable * 100, 1)
+    n_tier = ("normal" if normalized < 20 else
+              "watch"  if normalized < 40 else
+              "stress" if normalized < 65 else "crisis")
+    return {
+        "normalized":      normalized,
+        "max_achievable":  max_achievable,
+        "raw":             raw_total,
+        "normalized_tier": n_tier,
+    }
+
 
 def _tier(value: float, bounds: list) -> str:
     """bounds: [(upper_exclusive, tier), ..., (None, 'crisis')] 낮은 위험 → 높은 위험 순"""
@@ -2410,8 +2503,11 @@ def signal_desk_data():
     if latest:
         tiers    = json.loads(latest["indicator_tiers"] or "{}")
         snapshot = json.loads(latest["snapshot"] or "{}")
+        raw_total = latest["total_score"] or 0.0
+        coverage  = _coverage_from_snapshot(snapshot)
+        norm      = _normalized_score(snapshot, raw_total)
         result = {
-            "total_score":    latest["total_score"],
+            "total_score":    raw_total,
             "total_tier":     latest["total_tier"],
             "l1_score":       latest["l1_score"],
             "l2_score":       latest["l2_score"],
@@ -2428,6 +2524,9 @@ def signal_desk_data():
             "tier_meta":         _TIER_META,
             "interpretations":   INDICATOR_INTERPRETATIONS,
             "thresholds":        INDICATOR_THRESHOLDS,
+            "layer_spec":        LAYER_SPEC,
+            "coverage":          coverage,
+            "normalized":        norm,
             "history":           [dict(r) for r in history],
         }
     else:

@@ -625,13 +625,19 @@
 
     <!-- TMRS 카드 -->
     <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-        <div style="font-size:12px;color:#64748b;margin-bottom:8px;letter-spacing:1px;">TMRS SCORE</div>
-        <div style="display:flex;align-items:baseline;gap:10px;">
-            <div id="sd-score" style="font-size:52px;font-weight:700;color:#0f172a;line-height:1;">—</div>
-            <div style="font-size:18px;color:#94a3b8;">/100</div>
-            <div id="sd-tier-badge" style="margin-left:8px;padding:4px 12px;border-radius:20px;font-size:13px;font-weight:600;">—</div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;">
+            <div style="font-size:12px;color:#64748b;letter-spacing:1px;">TMRS SCORE</div>
+            <div id="sd-coverage-badge" style="font-size:10px;font-weight:700;padding:2px 8px;border-radius:10px;background:#f1f5f9;color:#94a3b8;letter-spacing:0.5px;">Coverage —%</div>
         </div>
-        <!-- Layer 바 -->
+        <!-- 정규화 점수 + 원점수 -->
+        <div style="display:flex;align-items:baseline;gap:10px;flex-wrap:wrap;">
+            <div id="sd-score" style="font-size:52px;font-weight:700;color:#0f172a;line-height:1;">—</div>
+            <div style="display:flex;flex-direction:column;gap:2px;">
+                <div id="sd-tier-badge" style="padding:4px 12px;border-radius:20px;font-size:13px;font-weight:600;">—</div>
+                <div id="sd-raw-score" style="font-size:11px;color:#94a3b8;">원점수 —</div>
+            </div>
+        </div>
+        <!-- Layer 바 + Coverage -->
         <div style="margin-top:20px;display:flex;flex-direction:column;gap:8px;">
             <div style="display:flex;align-items:center;gap:8px;">
                 <div style="width:80px;font-size:11px;color:#64748b;">Layer 1</div>
@@ -639,6 +645,7 @@
                     <div id="sd-bar-l1" style="height:100%;background:#3b82f6;width:0%;transition:width 0.6s;border-radius:4px;"></div>
                 </div>
                 <div id="sd-val-l1" style="width:52px;text-align:right;font-size:11px;color:#64748b;">—/45</div>
+                <div id="sd-cov-l1" style="width:44px;text-align:right;font-size:10px;color:#94a3b8;">—/12</div>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
                 <div style="width:80px;font-size:11px;color:#64748b;">Layer 2</div>
@@ -646,6 +653,7 @@
                     <div id="sd-bar-l2" style="height:100%;background:#f59e0b;width:0%;transition:width 0.6s;border-radius:4px;"></div>
                 </div>
                 <div id="sd-val-l2" style="width:52px;text-align:right;font-size:11px;color:#64748b;">—/30</div>
+                <div id="sd-cov-l2" style="width:44px;text-align:right;font-size:10px;color:#94a3b8;">—/8</div>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
                 <div style="width:80px;font-size:11px;color:#64748b;">Layer 3</div>
@@ -653,6 +661,7 @@
                     <div id="sd-bar-l3" style="height:100%;background:#ef4444;width:0%;transition:width 0.6s;border-radius:4px;"></div>
                 </div>
                 <div id="sd-val-l3" style="width:52px;text-align:right;font-size:11px;color:#64748b;">—/15</div>
+                <div id="sd-cov-l3" style="width:44px;text-align:right;font-size:10px;color:#94a3b8;">—/7</div>
             </div>
             <div style="display:flex;align-items:center;gap:8px;">
                 <div style="width:80px;font-size:11px;color:#64748b;">Divergence</div>
@@ -660,6 +669,7 @@
                     <div id="sd-bar-div" style="height:100%;background:#8b5cf6;width:0%;transition:width 0.6s;border-radius:4px;"></div>
                 </div>
                 <div id="sd-val-div" style="width:52px;text-align:right;font-size:11px;color:#64748b;">—/10</div>
+                <div id="sd-cov-div" style="width:44px;text-align:right;font-size:10px;color:#94a3b8;">—/5</div>
             </div>
         </div>
     </div>
@@ -1937,24 +1947,56 @@ function renderSignalDesk(data) {
     const TIER_COLOR  = { normal:'#68d391', watch:'#f6ad55', stress:'#fc8181', crisis:'#9b2c2c' };
     const TIER_KO     = { normal:'정상', watch:'주의', stress:'스트레스', crisis:'위기' };
 
-    // 점수 & 티어
-    document.getElementById('sd-score').textContent = data.total_score.toFixed(1);
-    const badge = document.getElementById('sd-tier-badge');
-    badge.textContent = TIER_KO[data.total_tier] || data.total_tier;
-    badge.style.background = (TIER_COLOR[data.total_tier] || '#4a5568') + '33';
-    badge.style.color = TIER_COLOR[data.total_tier] || '#a0aec0';
-    badge.style.border = '1px solid ' + (TIER_COLOR[data.total_tier] || '#4a5568') + '66';
+    // ── Normalized Score + Coverage (Stage 2.1) ──────────────────
+    const norm = data.normalized || {};
+    const cov  = data.coverage   || {};
 
-    // Layer 바
-    const setBar = (id, val, max) => {
+    // 메인 점수 표시: normalized 기준
+    const normVal  = norm.normalized  ?? data.total_score;
+    const normTier = norm.normalized_tier || data.total_tier;
+    const maxAch   = norm.max_achievable  ?? 100;
+
+    document.getElementById('sd-score').textContent = (normVal ?? 0).toFixed(1);
+    document.getElementById('sd-raw-score').textContent =
+        `원점수 ${(data.total_score ?? 0).toFixed(1)} / ${maxAch}pt`;
+
+    // 티어 배지: normalized 기준 적용
+    const badge = document.getElementById('sd-tier-badge');
+    badge.textContent = TIER_KO[normTier] || normTier;
+    badge.style.background = (TIER_COLOR[normTier] || '#4a5568') + '33';
+    badge.style.color      = TIER_COLOR[normTier] || '#a0aec0';
+    badge.style.border     = '1px solid ' + (TIER_COLOR[normTier] || '#4a5568') + '66';
+
+    // Coverage 배지
+    const covPct   = cov.overall ?? 0;
+    const covBadge = document.getElementById('sd-coverage-badge');
+    covBadge.textContent = `Coverage ${covPct}%`;
+    if (covPct < 50) {
+        covBadge.style.background = '#fee2e2'; covBadge.style.color = '#dc2626';
+    } else if (covPct < 80) {
+        covBadge.style.background = '#fef3c7'; covBadge.style.color = '#b45309';
+    } else {
+        covBadge.style.background = '#f1f5f9'; covBadge.style.color = '#64748b';
+    }
+
+    // Layer 바 + Coverage 표시
+    const setBar = (id, val, max, covKey, covSpec) => {
         const pct = max > 0 ? Math.min(val / max * 100, 100) : 0;
         document.getElementById('sd-bar-' + id).style.width = pct + '%';
-        document.getElementById('sd-val-' + id).textContent = val.toFixed(1) + '/' + max;
+        document.getElementById('sd-val-' + id).textContent = (val ?? 0).toFixed(1) + '/' + max;
+        const covEl = document.getElementById('sd-cov-' + id);
+        if (covEl && cov[covKey]) {
+            const c = cov[covKey];
+            const inactive = c.inactive > 0 ? `+${c.inactive}` : '';
+            covEl.textContent = `${c.active}${inactive}/${c.spec}`;
+            covEl.style.color = c.pct < 50 ? '#dc2626' : c.pct < 80 ? '#b45309' : '#94a3b8';
+            covEl.title = `Coverage ${c.pct}% (active ${c.active}, 비활성 ${c.inactive}, spec ${c.spec})`;
+        }
     };
-    setBar('l1',  data.l1_score,  45);
-    setBar('l2',  data.l2_score,  30);
-    setBar('l3',  data.l3_score,  15);
-    setBar('div', data.div_score, 10);
+    setBar('l1',  data.l1_score,  45, '1',           12);
+    setBar('l2',  data.l2_score,  30, '2',            8);
+    setBar('l3',  data.l3_score,  15, '3',            7);
+    setBar('div', data.div_score, 10, 'divergence',   5);
 
     // Inverse Turkey
     const itEl = document.getElementById('sd-inv-turkey');
