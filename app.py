@@ -2524,7 +2524,7 @@ def signal_desk_data():
             "tier_meta":         _TIER_META,
             "interpretations":   INDICATOR_INTERPRETATIONS,
             "thresholds":        INDICATOR_THRESHOLDS,
-            "layer_spec":        LAYER_SPEC,
+            "layer_spec":        {str(k): v for k, v in LAYER_SPEC.items()},
             "coverage":          coverage,
             "normalized":        norm,
             "history":           [dict(r) for r in history],
