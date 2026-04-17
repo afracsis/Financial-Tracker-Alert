@@ -1,0 +1,8 @@
+uploads = []
+generated = []
+
+[[outputs]]
+id = "hX14OKiiyBivXgypTk2px"
+uri = "file://financial_tracker_source.zip"
+type = "unspecified"
+title = "Financial Market Tracker — 전체 소스 코드"

@@ -74,9 +74,24 @@ app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_prefix=1)
 DB_PATH = os.path.join(os.path.dirname(__file__), "data.db")
 FRED_API_BASE = "https://api.stlouisfed.org/fred/series/observations"
 
+# ── 버전 상수 ───────────────────────────────────────────────────
+THRESHOLD_TABLE_VERSION = "v1.2026-04-01"  # Stage 1 패치 bump (기존 v1.2026-04)
+SCORE_VERSION           = "v1.0.1"         # tmrs_scores 레코드 태깅용
+
 # ── NY Fed API ─────────────────────────────────────────────────
 NYFED_BASE = "https://markets.newyorkfed.org/api"
 NYFED_HEADERS = {"Accept": "application/json"}
+
+# ── JPY 만기별 일수 (Stage 2.0 인프라, Stage 2.4 점수화에서 사용) ─
+# 기존 함수 내 로컬 변수(_JPY_PERIOD_DAYS, PERIOD_DAYS)와 동일한 값.
+# 신규 save_jpy_daily_snapshot() 및 analyze_jpy_distribution.py 에서 참조.
+JPY_PERIOD_DAYS: dict[str, int] = {
+    "1M":  30,
+    "3M":  90,
+    "3Y":  1095,
+    "7Y":  2555,
+    "10Y": 3650,
+}
 
 
 # ══════════════════════════════════════════════════════════════
@@ -327,6 +342,26 @@ def init_db():
         conn.execute("ALTER TABLE jpy_swap_data ADD COLUMN spot_rate REAL")
         log.info("jpy_swap_data: spot_rate 컬럼 추가 완료")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_jpy_period_time ON jpy_swap_data(period, fetched_at)")
+
+    # ── Stage 2.0: JPY 일별 Snapshot 테이블 ──────────────────────
+    # 매일 KST 08:00 에 각 만기(1M/3M/3Y/7Y/10Y)의 bid + implied_yield 저장.
+    # 30일 누적 후 Stage 2.4 에서 percentile 기반 임계 확정 및 TMRS 통합.
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS jpy_swap_daily (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            date             TEXT    NOT NULL,
+            period           TEXT    NOT NULL,
+            bid              REAL    NOT NULL,
+            spot_rate        REAL    NOT NULL,
+            implied_yield_pct REAL,
+            snapshot_time    TEXT    NOT NULL,
+            UNIQUE(date, period)
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jpy_daily_date   ON jpy_swap_daily(date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_jpy_daily_period ON jpy_swap_daily(period)")
+    log.info("Stage 2.0 신규 테이블 준비 완료 (jpy_swap_daily)")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS jpy_swap_status (
             id         INTEGER PRIMARY KEY DEFAULT 1,
@@ -382,10 +417,81 @@ def init_db():
             indicator_tiers TEXT,
             inverse_turkey INTEGER DEFAULT 0,
             interpretation TEXT,
-            snapshot       TEXT
+            snapshot       TEXT,
+            score_version  TEXT    DEFAULT 'v1.0'
         )
     """)
+    # score_version 컬럼 마이그레이션 (기존 DB 호환)
+    existing_tmrs_cols = [r[1] for r in conn.execute("PRAGMA table_info(tmrs_scores)").fetchall()]
+    if "score_version" not in existing_tmrs_cols:
+        conn.execute("ALTER TABLE tmrs_scores ADD COLUMN score_version TEXT DEFAULT 'v1.0'")
+        conn.execute("UPDATE tmrs_scores SET score_version = 'v1.0' WHERE score_version IS NULL")
+        log.info("tmrs_scores: score_version 컬럼 추가 + 기존 레코드 'v1.0' 태깅 완료")
     log.info("tmrs_scores 테이블 준비 완료")
+
+    # ── Stage 1: Layer 2 신규 지표 테이블 ───────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS single_b_oas (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            date       TEXT    NOT NULL UNIQUE,
+            oas_bp     REAL    NOT NULL,
+            fetched_at TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_single_b_oas_date ON single_b_oas(date)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS ig_oas (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            date       TEXT    NOT NULL UNIQUE,
+            oas_bp     REAL    NOT NULL,
+            fetched_at TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_ig_oas_date ON ig_oas(date)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS lqd_prices (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            date             TEXT    NOT NULL UNIQUE,
+            close_price      REAL    NOT NULL,
+            daily_change_pct REAL,
+            fetched_at       TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_lqd_prices_date ON lqd_prices(date)")
+
+    log.info("Stage 1 신규 테이블 준비 완료 (single_b_oas, ig_oas, lqd_prices)")
+
+    # ── Stage 2: HYG ETF 가격 테이블 ─────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hyg_prices (
+            id               INTEGER PRIMARY KEY AUTOINCREMENT,
+            date             TEXT    NOT NULL UNIQUE,
+            close_price      REAL    NOT NULL,
+            daily_change_pct REAL,
+            fetched_at       TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_hyg_prices_date ON hyg_prices(date)")
+    log.info("Stage 2 신규 테이블 준비 완료 (hyg_prices)")
+
+    # ── Hotfix migration: BAMLH0A2HYBEY(Effective Yield) → BAMLH0A2HYB(OAS) ─
+    # HYBEY는 국채금리+스프레드 합계(≈7%)이므로 bp 변환 시 700+bp — 항상 Crisis.
+    # 올바른 HYB(OAS)는 현재 3.19% = 319bp (Normal).
+    # 감지 조건: oas_bp > 650 레코드 삭제 (HYBEY 범위, 정상 OAS 이 범위 거의 없음)
+    try:
+        wrong_count = conn.execute(
+            "SELECT COUNT(*) FROM single_b_oas WHERE oas_bp > 650"
+        ).fetchone()[0]
+        if wrong_count > 0:
+            conn.execute("DELETE FROM single_b_oas WHERE oas_bp > 650")
+            log.warning(
+                f"[Single-B OAS] BAMLH0A2HYBEY 오류 데이터 {wrong_count}건 삭제 "
+                "(Effective Yield → OAS 시리즈 마이그레이션)"
+            )
+    except Exception:
+        pass  # 최초 실행 시 테이블 없을 수 있음 (무시)
 
     conn.commit()
     conn.close()
@@ -498,6 +604,50 @@ _TIER_META  = {
     "crisis": {"ko": "위기",     "color": "#9b2c2c", "emoji": "🚨"},
 }
 
+# ── 지표별 해석 텍스트 (Signal Desk 상세 카드용) ─────────────────
+# v1.0 통합문서 카테고리 3.4–3.6 요약
+INDICATOR_INTERPRETATIONS: dict[str, str] = {
+    "sofr_effr":      "담보(SOFR)·무담보(EFFR) 금리 괴리. 확대 시 단기 자금시장 스트레스 — 은행 간 신뢰 약화 신호.",
+    "cp_aa_spread":   "A2/P2 CP − AA 금리차. 확대 시 비은행 기업의 단기 조달 비용 급등 — CP 시장 경색.",
+    "rrp":            "Fed RRP 잔고. 소진 시 시스템 유동성 완충재 고갈. QT로 구조적 감소 중 — 유동성 취약성 증가.",
+    "sofr_term":      "SOFR 90일 평균 − 당일 SOFR 괴리. 텀 프리미엄 확대 = 중기 자금 조달 스트레스 선행.",
+    "discount_window": "Fed 긴급 창구 이용액. 급증 시 은행 시스템의 구조적 자금 조달 문제 — 최후 수단 사용.",
+    "tga":            "재무부 현금 계좌 주간 변화. 급감 시 부채한도 위기 또는 재정 긴장 신호.",
+    "hy_oas":         "고수익채권 OAS. 상승 시 Credit 시장 전반의 위험 회피 심화 — Funding stress 의 Credit 전이 신호.",
+    "cp_effr":        "[보류 중 · cap=0] A2/P2 CP − EFFR 괴리. Stage 2.2 에서 A2/P2-AA 스프레드와 중복성 검토 후 정식 처리 예정.",
+    "single_b_oas":   "Single-B 등급 OAS. HY 중 가장 위험한 등급. Credit 위험의 가장 민감한 선행 지표 — 319bp 이하는 정상.",
+    "ig_oas":         "투자등급 OAS. 상승 시 우량 기업까지 Credit 스트레스 전이 — 최후 단계의 신호.",
+    "lqd_daily":      "LQD 일간 변화율 (투자등급 채권 ETF). 급락 시 기관 투자자의 유동성 확보 매도 — IG 시장 경색.",
+    "hyg_daily":      "HYG 일간 변화율 (HY 채권 ETF). 급락 시 HY 시장의 실시간 유동성 압박 — Credit 위험 실시간 탐지.",
+    "hyg_5day":       "HYG 5거래일 누적 변화율. 단기 노이즈를 줄인 HY 채권 시장 추세 — hyg_daily 의 확증 지표.",
+    "move":           "채권 내재 변동성. 상승 시 금리 불확실성 증가 — MOVE/VIX 비율과 함께 Inverse Turkey 판별에 사용.",
+    "vix":            "주식 내재 변동성. 자금·신용 스트레스 대비 낮으면 Inverse Turkey 패턴 (시장 미반응 위험).",
+    "skew":           "CBOE SKEW. 상승 시 꼬리 위험(tail risk) 프리미엄 급등 — 블랙스완 헤지 수요 증가.",
+    "move_vix_ratio": "MOVE/VIX 비율. 상승 시 채권 스트레스가 주식 시장 선행 — Inverse Turkey 의 핵심 전조 지표.",
+}
+
+# ── 지표별 임계값 설명 (단계별 텍스트, 상세 카드 표시용) ─────────
+INDICATOR_THRESHOLDS: dict[str, list] = {
+    # [normal_range, watch_range, stress_range, crisis_range]
+    "sofr_effr":      ["< 0bp",     "0 ~ 3bp",    "3 ~ 8bp",     "> 8bp"],
+    "cp_aa_spread":   ["< 20bp",    "20 ~ 35bp",  "35 ~ 50bp",   "> 50bp"],
+    "rrp":            ["> $100B",   "$50 ~ 100B",  "$10 ~ 50B",   "< $10B"],
+    "sofr_term":      ["< 5bp",     "5 ~ 15bp",   "15 ~ 30bp",   "> 30bp"],
+    "discount_window":["$0",        "< $5,000M",  "< $50,000M",  "> $50,000M"],
+    "tga":            ["< |$30B|",  "|$30 ~ 75B|","| $75 ~ 150B|","> |$150B|"],
+    "hy_oas":         ["< 3.5%",   "3.5 ~ 5.0%", "5.0 ~ 7.0%",  "> 7.0%"],
+    "cp_effr":        ["< 0.30pp", "0.30 ~ 0.60pp","0.60 ~ 1.00pp","> 1.00pp"],
+    "single_b_oas":   ["< 350bp",  "350 ~ 450bp","450 ~ 600bp",  "> 600bp"],
+    "ig_oas":         ["< 100bp",  "100 ~ 130bp","130 ~ 180bp",  "> 180bp"],
+    "lqd_daily":      ["> -0.5%",  "-0.5 ~ -1.0%","-1.0 ~ -2.0%","< -2.0%"],
+    "hyg_daily":      ["> -0.3%",  "-0.3 ~ -0.7%","-0.7 ~ -1.5%","< -1.5%"],
+    "hyg_5day":       ["< ±1.0%",  "±1.0 ~ 2.5%","±2.5 ~ 5.0%",  "> ±5.0%"],
+    "move":           ["< 80",     "80 ~ 100",   "100 ~ 150",    "> 150"],
+    "vix":            ["< 20",     "20 ~ 30",    "30 ~ 45",      "> 45"],
+    "skew":           ["< 130",    "130 ~ 145",  "145 ~ 160",    "> 160"],
+    "move_vix_ratio": ["< 4",      "4 ~ 5",      "5 ~ 6",        "> 6"],
+}
+
 
 def _tier(value: float, bounds: list) -> str:
     """bounds: [(upper_exclusive, tier), ..., (None, 'crisis')] 낮은 위험 → 높은 위험 순"""
@@ -574,22 +724,89 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
 
     # ── Layer 2: 신용시장 (Credit) — 30pt 상한 ────────────────────
 
-    # 2-a. HY OAS (%) — cap 7pt
+    # 2-a. HY OAS (%) — cap 5pt  [v1.0 카테고리 4.6 원본 복원: 7→5]
+    # ADR: 2026-04-14-stage1-layer2-weight-correction.md
     hy = conn.execute("SELECT value FROM hy_index ORDER BY date DESC LIMIT 1").fetchone()
     if hy:
         v = hy["value"]
         inds["hy_oas"] = dict(
-            name="HY OAS", layer=2, cap=7, value=v, unit="%",
+            name="HY OAS", layer=2, cap=5, value=v, unit="%",
             tier=_tier(v, [(3.5,"normal"), (5.0,"watch"), (7.0,"stress"), (None,"crisis")]),
         )
 
-    # 2-b. A2/P2 CP − EFFR 스프레드 (pp) — cap 5pt
+    # 2-b. A2/P2 CP − EFFR 스프레드 — cap=0 (점수 기여 보류)  [Stage 1 결정]
+    # 지표는 snapshot/UI에 표시하되 Layer 2 점수 기여 없음.
+    # 사유: v1.0 Layer 2 가중치 표에 없는 독자 구현 지표.
+    #       Stage 2에서 A2/P2-AA Spread(Layer 1, 6pt)와 redundancy 평가 후 정식 처리.
+    # ADR: 2026-04-14-stage1-cp-effr-weight-zero.md
     if cp30 and effr:
         v = round(cp30["value"] - effr["rate"], 4)
         inds["cp_effr"] = dict(
-            name="A2/P2 CP−EFFR", layer=2, cap=5, value=v, unit="pp",
+            name="A2/P2 CP−EFFR", layer=2, cap=0, value=v, unit="pp",
             tier=_tier(v, [(0.30,"normal"), (0.60,"watch"), (1.00,"stress"), (None,"crisis")]),
         )
+
+    # 2-c. Single-B OAS (bp) — cap 7pt  [Stage 1 신규]
+    # v1.0 카테고리 3.5.1: <350bp normal / 350-450 watch / 450-600 stress / >600 crisis
+    sb_row = conn.execute("SELECT oas_bp FROM single_b_oas ORDER BY date DESC LIMIT 1").fetchone()
+    if sb_row and sb_row["oas_bp"]:
+        v = sb_row["oas_bp"]
+        inds["single_b_oas"] = dict(
+            name="Single-B OAS", layer=2, cap=7, value=v, unit="bp",
+            tier=_tier(v, [(350,"normal"), (450,"watch"), (600,"stress"), (None,"crisis")]),
+        )
+
+    # 2-d. IG OAS (bp) — cap 3pt  [Stage 1 신규]
+    # v1.0 카테고리 3.5.1: <100bp normal / 100-130 watch / 130-180 stress / >180 crisis
+    ig_row = conn.execute("SELECT oas_bp FROM ig_oas ORDER BY date DESC LIMIT 1").fetchone()
+    if ig_row and ig_row["oas_bp"]:
+        v = ig_row["oas_bp"]
+        inds["ig_oas"] = dict(
+            name="IG OAS", layer=2, cap=3, value=v, unit="bp",
+            tier=_tier(v, [(100,"normal"), (130,"watch"), (180,"stress"), (None,"crisis")]),
+        )
+
+    # 2-e. LQD 일간 변화율 (%) — cap 2pt  [Stage 1 신규]
+    # v1.0 카테고리 3.5.2: >-0.5% normal / -0.5~-1% watch / -1~-2% stress / <-2% crisis
+    # Direction: inverse (음수가 클수록 stress → 값 부호 반전하여 _tier 적용)
+    lqd_row = conn.execute(
+        "SELECT daily_change_pct FROM lqd_prices WHERE daily_change_pct IS NOT NULL ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    if lqd_row and lqd_row["daily_change_pct"] is not None:
+        v = lqd_row["daily_change_pct"]
+        inds["lqd_daily"] = dict(
+            name="LQD 일간 변화율", layer=2, cap=2, value=v, unit="%",
+            tier=_tier(-v, [(0.5,"normal"), (1.0,"watch"), (2.0,"stress"), (None,"crisis")]),
+        )
+
+    # 2-f. HYG 일간 변화율 (%) — cap 4pt  [Stage 2 신규]
+    # v1.0 카테고리 3.5.3: >-0.3% normal / -0.3~-0.7% watch / -0.7~-1.5% stress / <-1.5% crisis
+    # Direction: inverse (음수가 클수록 stress → 값 부호 반전하여 _tier 적용)
+    hyg_row = conn.execute(
+        "SELECT daily_change_pct FROM hyg_prices WHERE daily_change_pct IS NOT NULL ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    if hyg_row and hyg_row["daily_change_pct"] is not None:
+        v = hyg_row["daily_change_pct"]
+        inds["hyg_daily"] = dict(
+            name="HYG 일간 변화율", layer=2, cap=4, value=v, unit="%",
+            tier=_tier(-v, [(0.3,"normal"), (0.7,"watch"), (1.5,"stress"), (None,"crisis")]),
+        )
+
+    # 2-g. HYG 5일 변화율 (%) — cap 3pt  [Stage 2 신규]
+    # v1.0 카테고리 3.5.3: <1% normal / 1~2.5% watch / 2.5~5% stress / >5% crisis (절댓값 기준)
+    # Direction: inverse (5일간 낙폭이 클수록 stress)
+    hyg_5d_rows = conn.execute(
+        "SELECT close_price FROM hyg_prices ORDER BY date DESC LIMIT 6"
+    ).fetchall()
+    if len(hyg_5d_rows) >= 6:
+        latest_close = hyg_5d_rows[0]["close_price"]
+        close_5ago   = hyg_5d_rows[5]["close_price"]
+        if close_5ago and close_5ago > 0:
+            chg_5d = round((latest_close / close_5ago - 1) * 100, 4)
+            inds["hyg_5day"] = dict(
+                name="HYG 5일 변화율", layer=2, cap=3, value=chg_5d, unit="%",
+                tier=_tier(-chg_5d, [(1.0,"normal"), (2.5,"watch"), (5.0,"stress"), (None,"crisis")]),
+            )
 
     # ── Layer 3: 주식·변동성 (Surface) — 15pt 상한 ───────────────
 
@@ -690,7 +907,18 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
     total_tier = _tier(total, [(20,"normal"), (40,"watch"), (65,"stress"), (None,"crisis")])
 
     # ── Inverse Turkey 판별 ───────────────────────────────────────
-    inv_turkey = bool(l1_sev >= 0.5 and l2_sev >= 0.4 and l3_sev <= 0.2)
+    # v1.0 카테고리 4.11.1: l12_avg >= 0.40 AND l3_norm <= 0.25
+    # ADR: 2026-04-14-stage1-inv-turkey-condition-hotfix.md
+    l12_avg = (l1_sev + l2_sev) / 2
+    inv_turkey = bool(l12_avg >= 0.40 and l3_sev <= 0.25)
+
+    # ── Inverse Turkey Telegram 알람 (Stage 1: 연결 완료) ────────
+    try:
+        telegram_alerts.alert_inverse_turkey(
+            inv_turkey, l1, l2, l3, total, inds
+        )
+    except Exception as _it_exc:
+        log.error(f"[Inverse Turkey] 알람 발송 오류: {_it_exc}")
 
     # ── 해석 텍스트 생성 ─────────────────────────────────────────
     interp = _tmrs_interpret(total, total_tier, l1, l2, l3, div, inv_turkey, inds)
@@ -698,7 +926,9 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
     # ── DB 저장 ───────────────────────────────────────────────────
     tiers_j    = json.dumps({k: v["tier"] for k, v in inds.items()}, ensure_ascii=False)
     snapshot_j = json.dumps(
-        {k: {"value": v["value"], "tier": v["tier"], "name": v["name"]} for k, v in inds.items()},
+        {k: {"value": v["value"], "tier": v["tier"], "name": v["name"],
+             "cap": v.get("cap"), "unit": v.get("unit",""), "layer": v.get("layer")}
+         for k, v in inds.items()},
         ensure_ascii=False,
     )
     c = get_db()
@@ -706,10 +936,12 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
         """INSERT INTO tmrs_scores
            (calculated_at, trigger, total_score, total_tier,
             l1_score, l2_score, l3_score, div_score,
-            indicator_tiers, inverse_turkey, interpretation, snapshot)
-           VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            indicator_tiers, inverse_turkey, interpretation, snapshot,
+            score_version)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (now_kst_str(), trigger, total, total_tier,
-         l1, l2, l3, div, tiers_j, int(inv_turkey), interp, snapshot_j),
+         l1, l2, l3, div, tiers_j, int(inv_turkey), interp, snapshot_j,
+         SCORE_VERSION),
     )
     c.commit()
     c.close()
@@ -942,6 +1174,50 @@ def start_scheduler() -> BackgroundScheduler:
         id="refresh_h41_weekly",
     )
     log.info("[H4.1] 스케줄 등록: 매주 금요일 7시 30분 KST (Discount Window + TGA)")
+
+    # Stage 1: Single-B OAS + IG OAS (FRED, 매일 07:15 / 22:15 KST)
+    scheduler.add_job(
+        refresh_single_b_oas,
+        trigger=CronTrigger(hour="7,22", minute="15", timezone="Asia/Seoul"),
+        id="refresh_single_b_oas",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[Single-B OAS] 스케줄 등록: 매일 7,22시 15분 KST")
+
+    scheduler.add_job(
+        refresh_ig_oas,
+        trigger=CronTrigger(hour="7,22", minute="15", timezone="Asia/Seoul"),
+        id="refresh_ig_oas",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[IG OAS] 스케줄 등록: 매일 7,22시 15분 KST")
+
+    # Stage 1: LQD ETF (yfinance, 매일 07:20 / 22:20 KST)
+    scheduler.add_job(
+        refresh_lqd,
+        trigger=CronTrigger(hour="7,22", minute="20", timezone="Asia/Seoul"),
+        id="refresh_lqd",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[LQD] 스케줄 등록: 매일 7,22시 20분 KST")
+
+    # Stage 2: HYG ETF (yfinance, 매일 07:20 / 22:20 KST)
+    scheduler.add_job(
+        refresh_hyg,
+        trigger=CronTrigger(hour="7,22", minute="20", timezone="Asia/Seoul"),
+        id="refresh_hyg",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[HYG] 스케줄 등록: 매일 7,22시 20분 KST")
+
+    # Stage 2.0: JPY 일별 snapshot (매일 08:00 KST — NY 마감 직후, TMRS 배치와 동일 시각)
+    scheduler.add_job(
+        save_jpy_daily_snapshot,
+        trigger=CronTrigger(hour="8", minute="0", timezone="Asia/Seoul"),
+        id="jpy_daily_snapshot",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[JPY Daily] 스케줄 등록: 매일 08:00 KST")
 
     scheduler.start()
     log.info("스케줄러 시작 완료 (misfire_grace=5분, coalesce=True, max_instances=1)")
@@ -1288,6 +1564,204 @@ def refresh_skew() -> int:
     else:
         telegram_alerts.record_success("skew_index")
     return count
+
+
+# ── Stage 1: Single-B OAS / IG OAS / LQD (Layer 2 응급 충실화) ──────
+
+def _upsert_oas_table(table: str, rows: list, value_key: str = "oas_bp") -> int:
+    """OAS 테이블 공통 upsert (single_b_oas, ig_oas)."""
+    if not rows:
+        return 0
+    conn = get_db()
+    saved = 0
+    for r in rows:
+        try:
+            v = float(r.get("value", 0))
+            if v <= 0 or r.get("value") == ".":
+                continue
+            # FRED는 % 단위 → bp 변환
+            oas_bp = round(v * 100, 2)
+            cur = conn.execute(
+                f"INSERT OR IGNORE INTO {table} (date, oas_bp, fetched_at) VALUES (?,?,?)",
+                (r["date"], oas_bp, now_kst_str()),
+            )
+            saved += cur.rowcount
+        except Exception:
+            continue
+    conn.commit()
+    conn.close()
+    log.info(f"[{table}] 신규 저장: {saved}건")
+    return saved
+
+
+def refresh_single_b_oas() -> int:
+    """FRED BAMLH0A2HYB (Single-B US HY OAS) 수집 → DB 저장.
+
+    v1.0 문서 카테고리 3.5.1 / Layer 2 가중 7pt
+    임계: Normal <350bp / Watch 350-450bp / Stress 450-600bp / Crisis >600bp
+
+    주의: BAMLH0A2HYBEY (Effective Yield) 와 혼동 금지.
+    - BAMLH0A2HYB  = OAS (스프레드만, ~3.19% = 319bp) ← 올바른 시리즈
+    - BAMLH0A2HYBEY = Effective Yield (국채금리+OAS 합계, ~7.08% = 708bp) ← 오류
+    """
+    conn = get_db()
+    count = conn.execute("SELECT COUNT(*) FROM single_b_oas").fetchone()[0]
+    conn.close()
+
+    limit = 1000 if count == 0 else 10
+    if count == 0:
+        log.info("[Single-B OAS] DB 비어있음 — 이력 로드 중...")
+
+    rows = fetch_fred_observations("BAMLH0A2HYB", limit=limit)
+    if rows:
+        saved = _upsert_oas_table("single_b_oas", rows)
+        if count == 0:
+            log.info(f"[Single-B OAS] 초기 로드 완료: {saved}건")
+        telegram_alerts.record_success("single_b_oas")
+        return saved
+    log.warning("[Single-B OAS] FRED 응답 없음")
+    telegram_alerts.record_error("single_b_oas", "FRED BAMLH0A2HYB 응답 없음")
+    return 0
+
+
+def refresh_ig_oas() -> int:
+    """FRED BAMLC0A0CM (IG US Corporate OAS) 수집 → DB 저장.
+
+    v1.0 문서 카테고리 3.5.1 / Layer 2 가중 3pt
+    임계: Normal <100bp / Watch 100-130bp / Stress 130-180bp / Crisis >180bp
+    """
+    conn = get_db()
+    count = conn.execute("SELECT COUNT(*) FROM ig_oas").fetchone()[0]
+    conn.close()
+
+    limit = 1000 if count == 0 else 10
+    if count == 0:
+        log.info("[IG OAS] DB 비어있음 — 이력 로드 중...")
+
+    rows = fetch_fred_observations("BAMLC0A0CM", limit=limit)
+    if rows:
+        saved = _upsert_oas_table("ig_oas", rows)
+        if count == 0:
+            log.info(f"[IG OAS] 초기 로드 완료: {saved}건")
+        telegram_alerts.record_success("ig_oas")
+        return saved
+    log.warning("[IG OAS] FRED 응답 없음")
+    telegram_alerts.record_error("ig_oas", "FRED BAMLC0A0CM 응답 없음")
+    return 0
+
+
+def refresh_lqd() -> int:
+    """LQD ETF 일간 가격 + 변화율 수집 → DB 저장 (yfinance).
+
+    v1.0 문서 카테고리 3.5.2 / Layer 2 가중 2pt
+    임계(daily_change_pct): Normal >-0.5% / Watch -0.5~-1% / Stress -1~-2% / Crisis <-2%
+    Direction: inverse (음수 클수록 stress)
+    """
+    if not _yf_available:
+        log.warning("[LQD] yfinance 미설치 — 스킵")
+        return 0
+    try:
+        import yfinance as yf
+        t = yf.Ticker("LQD")
+
+        # DB 비어있으면 3년 이력 전체 로드, 있으면 최근 10일만 갱신
+        conn_chk = get_db()
+        existing = conn_chk.execute("SELECT COUNT(*) FROM lqd_prices").fetchone()[0]
+        conn_chk.close()
+        if existing == 0:
+            log.info("[LQD] DB 비어있음 — 이력 로드 중 (2022-01-01 ~)")
+            hist = t.history(start="2022-01-01", interval="1d")
+        else:
+            hist = t.history(period="10d")
+
+        if hist.empty:
+            log.warning("[LQD] yfinance 응답 없음")
+            telegram_alerts.record_error("lqd_prices", "yfinance LQD 응답 없음")
+            return 0
+
+        conn  = get_db()
+        saved = 0
+        prev_close = None
+        for ts, row in hist.iterrows():
+            d     = ts.date().isoformat()
+            close = round(float(row["Close"]), 4)
+            chg_pct = None
+            if prev_close is not None and prev_close > 0:
+                chg_pct = round((close - prev_close) / prev_close * 100, 4)
+            prev_close = close
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO lqd_prices
+                   (date, close_price, daily_change_pct, fetched_at)
+                   VALUES (?,?,?,?)""",
+                (d, close, chg_pct, now_kst_str()),
+            )
+            saved += cur.rowcount
+
+        conn.commit()
+        conn.close()
+        log.info(f"[LQD] {saved}건 저장")
+        telegram_alerts.record_success("lqd_prices")
+        return saved
+    except Exception as exc:
+        log.error(f"[LQD] 수집 오류: {exc}")
+        telegram_alerts.record_error("lqd_prices", str(exc))
+        return 0
+
+
+def refresh_hyg() -> int:
+    """HYG ETF 일간 가격 + 변화율 수집 → DB 저장 (yfinance).
+
+    v1.0 문서 카테고리 3.5.3 / Layer 2 가중 4pt
+    임계(daily_change_pct): Normal >-0.3% / Watch -0.3~-0.7% / Stress -0.7~-1.5% / Crisis <-1.5%
+    Direction: inverse (음수가 클수록 stress)
+    5day 변화율 (cap 3pt): Normal <1% / Watch 1~2.5% / Stress 2.5~5% / Crisis >5% (절댓값 기준)
+    """
+    if not _yf_available:
+        log.warning("[HYG] yfinance 미설치 — 스킵")
+        return 0
+    try:
+        import yfinance as yf
+        t = yf.Ticker("HYG")
+        conn_chk = get_db()
+        existing = conn_chk.execute("SELECT COUNT(*) FROM hyg_prices").fetchone()[0]
+        conn_chk.close()
+        if existing == 0:
+            log.info("[HYG] DB 비어있음 — 이력 로드 중 (2022-01-01 ~)")
+            hist = t.history(start="2022-01-01", interval="1d")
+        else:
+            hist = t.history(period="10d")
+        if hist.empty:
+            log.warning("[HYG] yfinance 응답 없음")
+            telegram_alerts.record_error("hyg_prices", "yfinance HYG 응답 없음")
+            return 0
+
+        conn  = get_db()
+        saved = 0
+        prev_close = None
+        for ts, row in hist.iterrows():
+            d     = ts.date().isoformat()
+            close = round(float(row["Close"]), 4)
+            chg_pct = None
+            if prev_close is not None and prev_close > 0:
+                chg_pct = round((close - prev_close) / prev_close * 100, 4)
+            prev_close = close
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO hyg_prices
+                   (date, close_price, daily_change_pct, fetched_at)
+                   VALUES (?,?,?,?)""",
+                (d, close, chg_pct, now_kst_str()),
+            )
+            saved += cur.rowcount
+
+        conn.commit()
+        conn.close()
+        log.info(f"[HYG] {saved}건 저장")
+        telegram_alerts.record_success("hyg_prices")
+        return saved
+    except Exception as exc:
+        log.error(f"[HYG] 수집 오류: {exc}")
+        telegram_alerts.record_error("hyg_prices", str(exc))
+        return 0
 
 
 # ── Discount Window / TGA / SOFR90d (FRED API) ───────────────────
@@ -1829,14 +2303,75 @@ def get_data():
             "threshold_bp": SPREAD_THRESHOLD,
             "alert":        spread_current_bp is not None and spread_current_bp > SPREAD_THRESHOLD,
         },
+        # Stage 1: Layer 2 신규 지표 최신값
+        "single_b_oas":  _credit_latest("single_b_oas", "oas_bp"),
+        "ig_oas":        _credit_latest("ig_oas", "oas_bp"),
+        "lqd":           _credit_latest_lqd(),
+        # Stage 2: HYG ETF
+        "hyg":           _credit_latest_hyg(),
         # 공통
         "server_time_kst": now_kst_str(),
     })
 
 
+def _credit_latest(table: str, val_col: str) -> dict | None:
+    """OAS 테이블 최신 2개 레코드를 가져와 변화량 포함 dict 반환."""
+    conn = get_db()
+    rows = conn.execute(
+        f"SELECT date, {val_col} AS value FROM {table} ORDER BY date DESC LIMIT 35"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    latest = {"date": rows[0]["date"], "value": rows[0]["value"]}
+    prev   = {"date": rows[1]["date"], "value": rows[1]["value"]} if len(rows) > 1 else None
+    change = change_pct = None
+    if prev and prev["value"]:
+        change     = round(latest["value"] - prev["value"], 2)
+        change_pct = round(change / prev["value"] * 100, 2)
+    history = [{"date": r["date"], "value": r["value"]} for r in reversed(rows)]
+    return {"latest": latest, "prev": prev, "change": change, "change_pct": change_pct, "history": history}
+
+
+def _credit_latest_lqd() -> dict | None:
+    """LQD 최신값 + 일간 변화율 포함 dict 반환."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT date, close_price, daily_change_pct FROM lqd_prices ORDER BY date DESC LIMIT 35"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    latest = {"date": rows[0]["date"], "close": rows[0]["close_price"], "change_pct": rows[0]["daily_change_pct"]}
+    history = [{"date": r["date"], "close": r["close_price"], "change_pct": r["daily_change_pct"]}
+               for r in reversed(rows)]
+    return {"latest": latest, "history": history}
+
+
+def _credit_latest_hyg() -> dict | None:
+    """HYG 최신값 + 일간 변화율 + 5일 변화율 포함 dict 반환."""
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT date, close_price, daily_change_pct FROM hyg_prices ORDER BY date DESC LIMIT 35"
+    ).fetchall()
+    conn.close()
+    if not rows:
+        return None
+    latest = {"date": rows[0]["date"], "close": rows[0]["close_price"], "change_pct": rows[0]["daily_change_pct"]}
+    chg_5day = None
+    if len(rows) >= 6:
+        c0 = rows[0]["close_price"]
+        c5 = rows[5]["close_price"]
+        if c5 and c5 > 0:
+            chg_5day = round((c0 / c5 - 1) * 100, 4)
+    history = [{"date": r["date"], "close": r["close_price"], "change_pct": r["daily_change_pct"]}
+               for r in reversed(rows)]
+    return {"latest": latest, "change_5day": chg_5day, "history": history}
+
+
 @app.route("/signal-desk")
 def signal_desk_data():
-    """Signal Desk: 최신 TMRS 점수 + 이력 반환."""
+    """Signal Desk: 최신 TMRS 점수 + 이력 + prev/week snapshot 반환."""
     conn = get_db()
     latest = conn.execute(
         "SELECT * FROM tmrs_scores ORDER BY calculated_at DESC LIMIT 1"
@@ -1844,10 +2379,36 @@ def signal_desk_data():
     history = conn.execute(
         "SELECT calculated_at, total_score, total_tier FROM tmrs_scores ORDER BY calculated_at DESC LIMIT 30"
     ).fetchall()
+    # prev/week snapshot 추출 — tmrs_scores 이력에서 날짜 기준 탐색
+    recent_snaps = conn.execute(
+        "SELECT calculated_at, snapshot FROM tmrs_scores ORDER BY calculated_at DESC LIMIT 60"
+    ).fetchall()
     conn.close()
 
+    prev_snapshot: dict = {}
+    week_snapshot: dict = {}
+    if latest and recent_snaps:
+        latest_date = latest["calculated_at"][:10]
+        # prev: 가장 최근의 다른 날 snapshot
+        for row in recent_snaps[1:]:
+            if row["calculated_at"][:10] != latest_date:
+                prev_snapshot = json.loads(row["snapshot"] or "{}")
+                break
+        # week: 7일 전 날짜에 가장 가까운 snapshot
+        try:
+            target = (datetime.strptime(latest_date, "%Y-%m-%d") - timedelta(days=7)).strftime("%Y-%m-%d")
+            best, best_diff = {}, None
+            for row in recent_snaps:
+                d = abs((datetime.strptime(row["calculated_at"][:10], "%Y-%m-%d")
+                         - datetime.strptime(target, "%Y-%m-%d")).days)
+                if best_diff is None or d < best_diff:
+                    best_diff, best = d, json.loads(row["snapshot"] or "{}")
+            week_snapshot = best
+        except Exception:
+            pass
+
     if latest:
-        tiers = json.loads(latest["indicator_tiers"] or "{}")
+        tiers    = json.loads(latest["indicator_tiers"] or "{}")
         snapshot = json.loads(latest["snapshot"] or "{}")
         result = {
             "total_score":    latest["total_score"],
@@ -1860,14 +2421,49 @@ def signal_desk_data():
             "interpretation": latest["interpretation"],
             "calculated_at":  latest["calculated_at"],
             "trigger":        latest["trigger"],
-            "indicator_tiers": tiers,
-            "snapshot":       snapshot,
-            "tier_meta":      _TIER_META,
-            "history":        [dict(r) for r in history],
+            "indicator_tiers":   tiers,
+            "snapshot":          snapshot,
+            "prev_snapshot":     prev_snapshot,
+            "week_snapshot":     week_snapshot,
+            "tier_meta":         _TIER_META,
+            "interpretations":   INDICATOR_INTERPRETATIONS,
+            "thresholds":        INDICATOR_THRESHOLDS,
+            "history":           [dict(r) for r in history],
         }
     else:
         result = {"total_score": None, "calculated_at": None, "history": []}
 
+    return jsonify(result)
+
+
+@app.route("/indicator/<key>/timeseries")
+def indicator_timeseries(key: str):
+    """단일 지표의 30일 시계열 반환 — tmrs_scores.snapshot JSON 이력에서 추출."""
+    days = request.args.get("days", 30, type=int)
+    days = max(7, min(90, days))
+
+    conn = get_db()
+    rows = conn.execute(
+        "SELECT calculated_at, snapshot FROM tmrs_scores ORDER BY calculated_at DESC LIMIT ?",
+        (days * 4,),   # 하루 여러 번 계산 가능하므로 버퍼
+    ).fetchall()
+    conn.close()
+
+    # 날짜별 중복 제거 (가장 최신 1건 유지)
+    seen: dict = {}
+    for row in rows:
+        date = row["calculated_at"][:10]
+        if date not in seen:
+            snap = json.loads(row["snapshot"] or "{}")
+            if key in snap:
+                seen[date] = {
+                    "date":  date,
+                    "ts":    row["calculated_at"],
+                    "value": snap[key].get("value"),
+                    "tier":  snap[key].get("tier"),
+                }
+
+    result = sorted(seen.values(), key=lambda r: r["date"])[-days:]
     return jsonify(result)
 
 
@@ -2403,6 +2999,77 @@ def _jpy_annualized(bid: float | None, spot: float | None, days: int) -> float |
         return None
 
 
+def save_jpy_daily_snapshot() -> int:
+    """매일 KST 08:00 에 JPY swap 5개 만기의 일별 snapshot 저장.
+
+    Stage 2.0 인프라 구축 — Stage 2.4 에서 30일 누적 후 percentile 임계 확정.
+
+    동작:
+      1. 각 만기(1M/3M/3Y/7Y/10Y)별로 오늘 fetch 된 가장 최근 값 조회
+         (오늘 데이터 없으면 DB 내 가장 최신 값으로 대체 + 경고)
+      2. _jpy_annualized() 로 implied_yield_pct 계산
+      3. jpy_swap_daily 에 INSERT OR REPLACE (같은 날 재실행 시 갱신)
+
+    GPT 가이드 핵심: 분석 시 bid 의 절대값 변화 기준 사용
+      - abs(bid) 감소 = 0 에 가까워짐 = carry 약화 (stress 신호)
+      - abs(bid) 증가 = carry 강화 (normal)
+    Stage 2.4 에서 scripts/analyze_jpy_distribution.py 로 분포 분석.
+    """
+    today_kst = datetime.now(tz=KST).strftime("%Y-%m-%d")
+    now_iso   = datetime.now(tz=KST).isoformat()
+
+    conn = get_db()
+    saved_count    = 0
+    missing_periods: list[str] = []
+
+    for period, days in JPY_PERIOD_DAYS.items():
+        # 오늘 KST 날짜 기준 최신 fetch 먼저 시도
+        row = conn.execute(
+            """SELECT bid, spot_rate FROM jpy_swap_data
+               WHERE period = ? AND date(fetched_at) = ?
+               ORDER BY fetched_at DESC LIMIT 1""",
+            (period, today_kst),
+        ).fetchone()
+
+        if row is None:
+            # 오늘 fetch 없으면 DB 내 가장 최신 값으로 fallback
+            row = conn.execute(
+                """SELECT bid, spot_rate FROM jpy_swap_data
+                   WHERE period = ?
+                   ORDER BY fetched_at DESC LIMIT 1""",
+                (period,),
+            ).fetchone()
+            if row is None:
+                missing_periods.append(period)
+                continue
+            log.debug(f"[JPY Daily] {period}: 오늘 fetch 없음 — 최신 값으로 대체")
+
+        bid       = row["bid"]
+        spot_rate = row["spot_rate"]
+        implied   = _jpy_annualized(bid, spot_rate, days)
+
+        conn.execute(
+            """INSERT OR REPLACE INTO jpy_swap_daily
+               (date, period, bid, spot_rate, implied_yield_pct, snapshot_time)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (today_kst, period, bid, spot_rate, implied, now_iso),
+        )
+        saved_count += 1
+
+    conn.commit()
+    conn.close()
+
+    if missing_periods:
+        log.warning(
+            f"[JPY Daily] {today_kst} snapshot: {saved_count}/5 저장, "
+            f"누락 만기: {missing_periods} (jpy_swap_data 미수집)"
+        )
+    else:
+        log.info(f"[JPY Daily] {today_kst} snapshot 저장 완료 ({saved_count}/5 만기)")
+
+    return saved_count
+
+
 def refresh_jpy() -> None:
     """
     JPY 포워드 레이트 스크래핑 후 DB 저장.
@@ -2825,7 +3492,39 @@ def _startup_full_refresh() -> None:
     except Exception as exc:
         log.error(f"[Startup] TGA 갱신 오류: {exc}")
 
-    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료")
+    # 10. Single-B OAS 초기 로드 (Stage 1)
+    try:
+        refresh_single_b_oas()
+    except Exception as exc:
+        log.error(f"[Startup] Single-B OAS 갱신 오류: {exc}")
+
+    # 11. IG OAS 초기 로드 (Stage 1)
+    try:
+        refresh_ig_oas()
+    except Exception as exc:
+        log.error(f"[Startup] IG OAS 갱신 오류: {exc}")
+
+    # 12. LQD ETF 초기 로드 (Stage 1)
+    try:
+        refresh_lqd()
+    except Exception as exc:
+        log.error(f"[Startup] LQD 갱신 오류: {exc}")
+
+    # 13. HYG ETF 초기 로드 (Stage 2)
+    try:
+        refresh_hyg()
+    except Exception as exc:
+        log.error(f"[Startup] HYG 갱신 오류: {exc}")
+
+    # 14. JPY 일별 snapshot 초기 저장 (Stage 2.0)
+    # jpy_swap_data 에 데이터가 있는 경우에만 저장 (없으면 0건 저장 + 경고 로그)
+    try:
+        saved = save_jpy_daily_snapshot()
+        log.info(f"[Startup] JPY daily snapshot: {saved}/5 만기 저장")
+    except Exception as exc:
+        log.error(f"[Startup] JPY daily snapshot 오류: {exc}")
+
+    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 2.0 포함)")
 
 
 def _startup() -> None:
