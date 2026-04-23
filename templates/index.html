@@ -1044,10 +1044,10 @@
             <div class="nyfed-value loading" id="nyfed-spread">—<span class="nyfed-unit">%p</span></div>
             <div class="nyfed-sub" id="nyfed-spread-sub">로딩 중...</div>
         </div>
-        <!-- SOFR 텀 프리미엄 (FRA-OIS 프록시) -->
+        <!-- SOFR Term Premium -->
         <div class="nyfed-card">
             <div class="nyfed-card-accent" style="background:#9f7aea;"></div>
-            <div class="nyfed-label">SOFR 텀 프리미엄 <span style="color:#4a5568;font-size:10px;">· FRA-OIS 프록시 (90일 평균 − 익일물)</span></div>
+            <div class="nyfed-label">SOFR Term Premium <span style="color:#4a5568;font-size:10px;">· 90일 평균 − 익일물 (bp)</span></div>
             <div class="nyfed-value loading" id="nyfed-term-spread">—<span class="nyfed-unit">bp</span></div>
             <div class="nyfed-sub" id="nyfed-term-spread-sub">로딩 중...</div>
         </div>
@@ -2525,7 +2525,7 @@ async function loadNyfed() {
             spreadSub.textContent = `EFFR 기준일: ${effrDate} · SOFR 기준일: ${sofrDate} (공통일 없음)`;
         }
 
-        // SOFR 텀 프리미엄 (FRA-OIS 프록시)
+        // SOFR Term Premium (90일 평균 − 익일물)
         const termEl  = document.getElementById('nyfed-term-spread');
         const termSub = document.getElementById('nyfed-term-spread-sub');
         if (termEl && d.term_spread !== null && d.term_spread !== undefined) {

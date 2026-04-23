@@ -2813,7 +2813,7 @@ def get_nyfed():
             spread      = round(sr["rate"] - er["rate"], 4)   # SOFR - EFFR
             spread_date = cdate
 
-    # SOFR 90일 평균 — FRA-OIS 프록시
+    # SOFR 90일 평균 — SOFR Term Premium 계산용
     sofr_90_row = conn.execute("SELECT date, value FROM sofr_90d ORDER BY date DESC LIMIT 1").fetchone()
     sofr_90d = None
     if sofr_90_row:
