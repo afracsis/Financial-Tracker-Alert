@@ -635,7 +635,7 @@ INDICATOR_THRESHOLDS: dict[str, list] = {
     "sofr_term":      ["< 5bp",     "5 ~ 15bp",   "15 ~ 30bp",   "> 30bp"],
     "discount_window":["$0",        "< $5,000M",  "< $50,000M",  "> $50,000M"],
     "tga":            ["< |$30B|",  "|$30 ~ 75B|","| $75 ~ 150B|","> |$150B|"],
-    "hy_oas":         ["< 3.5%",   "3.5 ~ 5.0%", "5.0 ~ 7.0%",  "> 7.0%"],
+    "hy_oas":         ["< 3.0%",   "3.0 ~ 4.0%", "4.0 ~ 5.5%",  "> 5.5%"],
     "cp_effr":        ["< 0.30pp", "0.30 ~ 0.60pp","0.60 ~ 1.00pp","> 1.00pp"],
     "single_b_oas":   ["< 350bp",  "350 ~ 450bp","450 ~ 600bp",  "> 600bp"],
     "ig_oas":         ["< 100bp",  "100 ~ 130bp","130 ~ 180bp",  "> 180bp"],
@@ -677,7 +677,7 @@ LDS_INDICATORS: dict = {
     },
     "hy_oas": {
         "name":      "HY OAS",
-        "barrier":   7.0,      # % — Crisis 임계
+        "barrier":   5.5,      # % — Crisis 임계 (v1.0 원문 복원)
         "direction": "above",
         "weight":    5,
         "unit":      "%",
@@ -921,7 +921,7 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
         v = hy["value"]
         inds["hy_oas"] = dict(
             name="HY OAS", layer=2, cap=5, value=v, unit="%",
-            tier=_tier(v, [(3.5,"normal"), (5.0,"watch"), (7.0,"stress"), (None,"crisis")]),
+            tier=_tier(v, [(3.0,"normal"), (4.0,"watch"), (5.5,"stress"), (None,"crisis")]),
         )
 
     # 2-b. A2/P2 CP − EFFR 스프레드 — cap=0 (점수 기여 보류)  [Stage 1 결정]
