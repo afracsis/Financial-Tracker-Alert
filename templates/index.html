@@ -2707,7 +2707,7 @@ async function loadFedOp() {
         }
 
         // ── Discount Window 카드 ────────────────────────────────
-        const dw = data.discount_window;
+        const dw = d.discount_window;
         const dwEl  = document.getElementById('fedop-dw-val');
         const dwSub = document.getElementById('fedop-dw-sub');
         const dwCard = document.getElementById('fedop-dw-card');
@@ -2735,7 +2735,7 @@ async function loadFedOp() {
         }
 
         // ── TGA 카드 ─────────────────────────────────────────────
-        const tga = data.tga;
+        const tga = d.tga;
         const tgaEl  = document.getElementById('fedop-tga-val');
         const tgaSub = document.getElementById('fedop-tga-sub');
         if (tgaEl) {
