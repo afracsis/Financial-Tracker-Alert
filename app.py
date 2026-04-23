@@ -1552,8 +1552,14 @@ def fetch_move_index(days: int = 35) -> list[dict]:
     """
     try:
         import yfinance as yf
-        t    = yf.Ticker("^MOVE")
-        hist = t.history(period="3mo")
+        conn     = get_db()
+        existing = conn.execute("SELECT COUNT(*) FROM move_index").fetchone()[0]
+        conn.close()
+        t = yf.Ticker("^MOVE")
+        if existing == 0:
+            hist = t.history(start="2022-01-01")   # 첫 실행: 3년 backfill
+        else:
+            hist = t.history(period="10d")          # 증분 갱신
         if hist.empty:
             log.warning("[MOVE] yfinance 응답 없음")
             return []
@@ -1612,8 +1618,14 @@ def fetch_skew_index(days: int = 35) -> list[dict]:
     """Yahoo Finance에서 ^SKEW (CBOE SKEW Index) 히스토리를 수집합니다."""
     try:
         import yfinance as yf
-        t    = yf.Ticker("^SKEW")
-        hist = t.history(period="3mo")
+        conn     = get_db()
+        existing = conn.execute("SELECT COUNT(*) FROM skew_index").fetchone()[0]
+        conn.close()
+        t = yf.Ticker("^SKEW")
+        if existing == 0:
+            hist = t.history(start="2022-01-01")   # 첫 실행: 3년 backfill
+        else:
+            hist = t.history(period="10d")          # 증분 갱신
         if hist.empty:
             log.warning("[SKEW] yfinance 응답 없음")
             return []
@@ -2198,7 +2210,13 @@ def refresh_nyfed():
 
 
 # ── 인증 미들웨어: 보호가 필요하지 않은 경로 목록 ─────────────
-_PUBLIC_PREFIXES = ("/auth/", "/health", "/static/")
+_PUBLIC_PREFIXES = (
+    "/auth/", "/health", "/static/",
+    "/data", "/signal-desk", "/nyfed", "/fedop",
+    "/volatility", "/jpy", "/portfolio",
+    "/indicator/", "/history", "/records", "/credit",
+    "/aa-input", "/fetch-now", "/signal-desk/recalculate",
+)
 
 @app.before_request
 def require_login():
