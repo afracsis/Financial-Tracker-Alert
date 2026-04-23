@@ -360,3 +360,81 @@ def alert_inverse_turkey(
         _cooldown[_COOLDOWN_KEY] = datetime.now(tz=KST)
         log.info(f"[Inverse Turkey] 알람 발송 완료 (L12={l12_avg:.2f}, L3={l3_norm:.2f})")
     return sent
+
+
+# ── Lindy Collapse Alert ─────────────────────────────────────────
+# De-duplication: Inverse Turkey 와 동일한 24h 패턴
+#   composite < 0.15 이고 False→True 전환 시, 또는 True 지속 24h 경과 시 재발송
+
+_LINDY_COLLAPSE_COOLDOWN_HOURS = 24
+_lc_state: dict[str, bool] = {"prev_alert": False}
+
+
+def alert_lindy_collapse(lds_result: dict) -> bool:
+    """
+    Composite LDS < 0.15 시 텔레그램 Lindy Collapse 알람 발송.
+
+    트리거 조건:
+      - lds_result['alert'] == True 이고
+      - 이전 상태가 False (False→True 전환) 이거나
+      - 24시간 쿨다운 초과 (지속 알람)
+
+    De-duplication:
+      - True 지속 중 24시간 내 재발송 금지
+      - True→False 전환 시 쿨다운 리셋
+    """
+    _COOLDOWN_KEY = "lindy_collapse"
+
+    if not lds_result.get("alert", False):
+        if _lc_state.get("prev_alert", False):
+            log.info("[Lindy Collapse] False로 전환 — 쿨다운 리셋")
+            _cooldown.pop(_COOLDOWN_KEY, None)
+        _lc_state["prev_alert"] = False
+        return False
+
+    was_false = not _lc_state.get("prev_alert", False)
+    _lc_state["prev_alert"] = True
+
+    last = _cooldown.get(_COOLDOWN_KEY)
+    if last is not None:
+        elapsed = datetime.now(tz=KST) - last
+        if elapsed < timedelta(hours=_LINDY_COLLAPSE_COOLDOWN_HOURS):
+            if not was_false:
+                log.debug(f"[Lindy Collapse] 쿨다운 중 ({elapsed.seconds//3600}h/{_LINDY_COLLAPSE_COOLDOWN_HOURS}h) — 발송 건너뜀")
+                return False
+
+    composite  = lds_result["composite"]
+    individual = lds_result.get("individual", {})
+    tier       = lds_result.get("tier", "—")
+
+    sorted_inds = sorted(individual.items(), key=lambda x: x[1]["lds"])
+    detail_lines = []
+    for _, info in sorted_inds:
+        emoji = "🔴" if info["lds"] < 0.10 else "🟠" if info["lds"] < 0.25 else "🟡"
+        detail_lines.append(
+            f"  {emoji} {info['name']}: {info['lds']:.3f} "
+            f"(현재 {info['value']}{info['unit']} → 장벽 {info['barrier']}{info['unit']})"
+        )
+
+    now_kst      = datetime.now(tz=KST).strftime("%Y-%m-%d %H:%M KST")
+    trigger_type = "🔴 신규 진입" if was_false else "🔴 지속 (24h 경과)"
+
+    message = (
+        f"⚠️ <b>[Lindy Collapse Warning]</b> {trigger_type}\n"
+        f"━━━━━━━━━━━━━━━━━━━━\n"
+        f"● 시각: {now_kst}\n"
+        f"● Composite LDS: <b>{composite:.3f}</b> (임계 0.15 미만)\n"
+        f"● Tier: {tier}\n"
+        f"\n"
+        f"다수 Credit 지표가 흡수 장벽에 근접.\n"
+        f"파워로 생존 구간 이탈 임박.\n"
+        f"\n"
+        + "\n".join(detail_lines)
+        + f"\n\n🔗 <a href=\"{_dashboard_url()}\">대시보드 확인</a>"
+    )
+
+    sent = send_raw(message)
+    if sent:
+        _cooldown[_COOLDOWN_KEY] = datetime.now(tz=KST)
+        log.info(f"[Lindy Collapse] 알람 발송 완료 (composite={composite:.3f})")
+    return sent
