@@ -658,6 +658,39 @@ LAYER_SPEC: dict = {
     "divergence":{"spec_indicators":  5, "spec_max_score": 10},
 }
 
+# ── Stage 3: LDS (Lindy Distance Score) — 탈렙 2026년 3월 논문 기반 ──────────
+# Credit 지표의 Crisis 임계값 = 흡수 장벽. 현재값과 장벽 거리를 0~1 정규화.
+LDS_INDICATORS: dict = {
+    "single_b_oas": {
+        "name":      "Single-B OAS",
+        "barrier":   600,      # bp — Crisis 임계
+        "direction": "above",  # 600bp 이상이면 흡수
+        "weight":    7,        # TMRS cap 비례
+        "unit":      "bp",
+    },
+    "cp_aa_spread": {
+        "name":      "CP Spread (A2/P2-AA)",
+        "barrier":   50,       # bp — Crisis 임계
+        "direction": "above",
+        "weight":    6,
+        "unit":      "bp",
+    },
+    "hy_oas": {
+        "name":      "HY OAS",
+        "barrier":   7.0,      # % — Crisis 임계
+        "direction": "above",
+        "weight":    5,
+        "unit":      "%",
+    },
+    "hyg_daily": {
+        "name":      "HYG 일간 변화",
+        "barrier":   -1.5,     # % — Crisis 임계
+        "direction": "below",  # -1.5% 이하면 흡수
+        "weight":    4,
+        "unit":      "%",
+    },
+}
+
 
 def _coverage_from_snapshot(snapshot: dict) -> dict:
     """snapshot의 cap/layer 필드로 Layer별 Coverage Ratio 계산.
@@ -739,6 +772,70 @@ def _normalized_score(snapshot: dict, raw_total: float) -> dict:
         "max_achievable":  max_achievable,
         "raw":             raw_total,
         "normalized_tier": n_tier,
+    }
+
+
+def lindy_distance_score(current: float, barrier: float, direction: str = "above") -> float:
+    """흡수 장벽으로부터의 거리를 0~1 로 정규화.
+
+    0.0 = 장벽 도달/돌파 (흡수, 위험)
+    1.0 = 장벽 원거리 (안전)
+
+    direction='above': 값이 barrier 위로 돌파하면 흡수 (OAS 계열)
+    direction='below': 값이 barrier 아래로 돌파하면 흡수 (HYG daily 등)
+    """
+    if direction == "above":
+        distance = (barrier - current) / barrier if barrier != 0 else 0.0
+    else:
+        distance = (current - barrier) / abs(barrier) if barrier != 0 else 0.0
+    return max(0.0, min(1.0, distance))
+
+
+def calculate_composite_lds(snapshot: dict) -> dict:
+    """4개 Credit 지표의 cap 비례 가중 평균 LDS.
+
+    Returns:
+        composite       : float 0~1
+        individual      : {key: {value, lds, barrier, name, unit}}
+        tier            : 'lindy' | 'pre_lindy' | 'hazard_rising' | 'absorption_imminent'
+        alert           : bool (composite < 0.15 → Lindy Collapse)
+    """
+    individual: dict = {}
+    weighted_sum  = 0.0
+    total_weight  = 0
+
+    for key, cfg in LDS_INDICATORS.items():
+        ind = snapshot.get(key, {})
+        val = ind.get("value")
+        if val is None:
+            continue
+        lds = lindy_distance_score(val, cfg["barrier"], cfg["direction"])
+        individual[key] = {
+            "value":   val,
+            "lds":     round(lds, 3),
+            "barrier": cfg["barrier"],
+            "name":    cfg["name"],
+            "unit":    cfg["unit"],
+        }
+        weighted_sum += lds * cfg["weight"]
+        total_weight += cfg["weight"]
+
+    composite = round(weighted_sum / total_weight, 3) if total_weight > 0 else 0.0
+
+    if composite > 0.50:
+        tier = "lindy"
+    elif composite > 0.25:
+        tier = "pre_lindy"
+    elif composite > 0.10:
+        tier = "hazard_rising"
+    else:
+        tier = "absorption_imminent"
+
+    return {
+        "composite":  composite,
+        "individual": individual,
+        "tier":       tier,
+        "alert":      composite < 0.15,
     }
 
 
@@ -2524,6 +2621,8 @@ def signal_desk_data():
         raw_total = latest["total_score"] or 0.0
         coverage  = _coverage_from_snapshot(snapshot)
         norm      = _normalized_score(snapshot, raw_total)
+        lds       = calculate_composite_lds(snapshot)
+        telegram_alerts.alert_lindy_collapse(lds)
         result = {
             "total_score":    raw_total,
             "total_tier":     latest["total_tier"],
@@ -2545,6 +2644,7 @@ def signal_desk_data():
             "layer_spec":        {str(k): v for k, v in LAYER_SPEC.items()},
             "coverage":          coverage,
             "normalized":        norm,
+            "lds":               lds,
             "history":           [dict(r) for r in history],
         }
     else:

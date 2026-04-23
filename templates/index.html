@@ -674,10 +674,28 @@
         </div>
     </div>
 
-    <!-- 알람 카드 (Inverse Turkey) -->
-    <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:24px;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
-        <div id="sd-inv-turkey" style="border-radius:8px;padding:10px 14px;font-size:12px;background:#f1f5f9;color:#64748b;">
-            🦃 Inverse Turkey: 미감지
+    <!-- LDS + Inverse Turkey 카드 -->
+    <div style="background:#ffffff;border:1px solid #e2e8f0;border-radius:12px;padding:20px;box-shadow:0 1px 3px rgba(0,0,0,0.05);">
+        <!-- 상단: Lindy Distance Score -->
+        <div style="margin-bottom:14px;">
+            <div style="font-size:11px;font-weight:700;letter-spacing:1.5px;color:#94a3b8;text-transform:uppercase;margin-bottom:10px;">LINDY DISTANCE</div>
+            <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;">
+                <span id="sd-lds-emoji" style="font-size:20px;">—</span>
+                <span id="sd-lds-composite" style="font-size:28px;font-weight:700;color:#0f172a;">—</span>
+                <span id="sd-lds-tier" style="font-size:11px;font-weight:600;padding:2px 8px;border-radius:10px;background:#f1f5f9;color:#94a3b8;">—</span>
+            </div>
+            <div id="sd-lds-bars" style="display:flex;flex-direction:column;gap:7px;">
+                <!-- JS 렌더 -->
+            </div>
+        </div>
+        <!-- 구분선 -->
+        <div style="border-top:1px solid #e2e8f0;margin-bottom:12px;"></div>
+        <!-- 하단: Inverse Turkey -->
+        <div>
+            <div style="font-size:11px;font-weight:700;letter-spacing:1.5px;color:#94a3b8;text-transform:uppercase;margin-bottom:8px;">INVERSE TURKEY</div>
+            <div id="sd-inv-turkey" style="border-radius:8px;padding:10px 14px;font-size:12px;background:#f1f5f9;color:#64748b;">
+                🦃 Inverse Turkey: 미감지
+            </div>
         </div>
     </div>
 </div>
@@ -1998,6 +2016,49 @@ function renderSignalDesk(data) {
     setBar('l3',  data.l3_score,  15, '3',            7);
     setBar('div', data.div_score, 10, 'divergence',   5);
 
+    // ── Lindy Distance Score (Stage 3) ──────────────────────────
+    const lds     = data.lds       || {};
+    const ldsComp = lds.composite  ?? null;
+    const ldsTier = lds.tier       || 'lindy';
+    const ldsInds = lds.individual || {};
+
+    if (ldsComp !== null) {
+        const ldsEmoji  = ldsComp > 0.50 ? '🟢' : ldsComp > 0.25 ? '🟡' : ldsComp > 0.10 ? '🟠' : '🔴';
+        const ldsTierKo = { lindy:'안전', pre_lindy:'경계', hazard_rising:'위험↑', absorption_imminent:'흡수임박' };
+        const ldsBgCol  = ldsComp > 0.50 ? '#dcfce7' : ldsComp > 0.25 ? '#fef3c7' : ldsComp > 0.10 ? '#fed7aa' : '#fee2e2';
+        const ldsTxtCol = ldsComp > 0.50 ? '#16a34a' : ldsComp > 0.25 ? '#b45309' : ldsComp > 0.10 ? '#c2410c' : '#dc2626';
+
+        const ldsEmojiEl = document.getElementById('sd-lds-emoji');
+        const ldsValEl   = document.getElementById('sd-lds-composite');
+        const ldsTierEl  = document.getElementById('sd-lds-tier');
+        if (ldsEmojiEl) ldsEmojiEl.textContent = ldsEmoji;
+        if (ldsValEl)   ldsValEl.textContent   = ldsComp.toFixed(3);
+        if (ldsTierEl) {
+            ldsTierEl.textContent       = ldsTierKo[ldsTier] || ldsTier;
+            ldsTierEl.style.background  = ldsBgCol;
+            ldsTierEl.style.color       = ldsTxtCol;
+        }
+
+        // 개별 지표 진행 바 (LDS 낮은 것 = 위험한 것 먼저)
+        const LDS_SHORT = { single_b_oas:'S-B OAS', cp_aa_spread:'CP Sprd', hy_oas:'HY OAS', hyg_daily:'HYG Day' };
+        const barsEl = document.getElementById('sd-lds-bars');
+        if (barsEl && Object.keys(ldsInds).length > 0) {
+            const sorted = Object.entries(ldsInds).sort((a, b) => a[1].lds - b[1].lds);
+            barsEl.innerHTML = sorted.map(([key, info]) => {
+                const pct   = Math.round(info.lds * 100);
+                const color = pct < 25 ? '#ef4444' : pct < 50 ? '#f97316' : pct < 75 ? '#eab308' : '#22c55e';
+                const lbl   = LDS_SHORT[key] || key;
+                return `<div style="display:flex;align-items:center;gap:6px;">
+                    <div style="width:50px;font-size:10px;color:#64748b;flex-shrink:0;">${lbl}</div>
+                    <div style="flex:1;background:#e2e8f0;border-radius:3px;height:6px;overflow:hidden;">
+                        <div style="height:100%;background:${color};width:${pct}%;border-radius:3px;transition:width 0.6s;"></div>
+                    </div>
+                    <div style="width:30px;text-align:right;font-size:10px;color:#64748b;">${info.lds.toFixed(2)}</div>
+                </div>`;
+            }).join('');
+        }
+    }
+
     // Inverse Turkey
     const itEl = document.getElementById('sd-inv-turkey');
     if (data.inverse_turkey) {
@@ -2033,11 +2094,12 @@ function renderIndicatorStatus(data) {
     const container = document.getElementById('sd-indicators');
     if (!container) return;
 
-    const snap   = data.snapshot        || {};
-    const prev   = data.prev_snapshot   || {};
-    const week   = data.week_snapshot   || {};
-    const interp = data.interpretations || {};
-    const thresh = data.thresholds      || {};
+    const snap    = data.snapshot        || {};
+    const prev    = data.prev_snapshot   || {};
+    const week    = data.week_snapshot   || {};
+    const interp  = data.interpretations || {};
+    const thresh  = data.thresholds      || {};
+    const ldsInds = (data.lds || {}).individual || {};
 
     const TIER_ORDER = { crisis:0, stress:1, watch:2, normal:3 };
 
@@ -2064,14 +2126,14 @@ function renderIndicatorStatus(data) {
     if (active.length > 0) {
         html += `<div class="ind-section-hdr">⚠️ Active Issues (${active.length})</div>`;
         for (const [key, ind] of active)
-            html += buildIndicatorCard(key, ind, prev, week, interp, thresh, true);
+            html += buildIndicatorCard(key, ind, prev, week, interp, thresh, true, ldsInds[key]);
     }
 
     // Section 2: 참고 지표 (cap=0)
     if (ref.length > 0) {
         html += `<div class="ind-section-hdr">📊 참고 지표 (cap=0)</div>`;
         for (const [key, ind] of ref)
-            html += buildIndicatorCard(key, ind, prev, week, interp, thresh, true);
+            html += buildIndicatorCard(key, ind, prev, week, interp, thresh, true, ldsInds[key]);
     }
 
     // Section 3: Normal by Layer (collapsible, lazy-load)
@@ -2086,7 +2148,7 @@ function renderIndicatorStatus(data) {
             html += `<summary><span style="color:${lm.color};font-weight:700;">${layerNames[layer] || 'Layer '+layer}</span><span style="color:#64748b;">&nbsp;(${inds.length})</span></summary>`;
             html += `<div style="padding:4px 0 4px 8px;">`;
             for (const [key, ind] of inds)
-                html += buildIndicatorCard(key, ind, prev, week, interp, thresh, false);
+                html += buildIndicatorCard(key, ind, prev, week, interp, thresh, false, ldsInds[key]);
             html += `</div></details>`;
         }
     }
@@ -2127,7 +2189,7 @@ function renderIndicatorStatus(data) {
     });
 }
 
-function buildIndicatorCard(key, ind, prev, week, interp, thresh, startOpen) {
+function buildIndicatorCard(key, ind, prev, week, interp, thresh, startOpen, ldsInfo) {
     const lm        = SD_LAYER_META[ind.layer] || { label:'?', color:'#a0aec0' };
     const tc        = SD_TIER_COLOR[ind.tier]  || '#a0aec0';
     const tierIcon  = SD_TIER_ICON[ind.tier]   || '?';
@@ -2165,6 +2227,24 @@ function buildIndicatorCard(key, ind, prev, week, interp, thresh, startOpen) {
     const interpTxt= interp[key] || '';
     const openAttr = startOpen ? ' open' : '';
 
+    // LDS 줄 (4개 대상 지표에만)
+    let ldsHtml = '';
+    if (ldsInfo) {
+        const lv  = ldsInfo.lds;
+        const pct = Math.round(lv * 100);
+        const ldsColor = pct < 25 ? '#ef4444' : pct < 50 ? '#f97316' : pct < 75 ? '#eab308' : '#22c55e';
+        const ldsEmoji = pct < 10 ? '🔴' : pct < 25 ? '🟠' : pct < 50 ? '🟡' : '🟢';
+        const remain = ldsInfo.barrier - ldsInfo.value;
+        const remainStr = Math.abs(remain).toFixed(remain >= 0 ? (Math.abs(remain) >= 10 ? 1 : 2) : 2);
+        const remainDir = remain >= 0 ? '여유' : '돌파';
+        ldsHtml = `<div style="margin-top:8px;padding:6px 8px;background:#f8fafc;border-radius:6px;border:1px solid #e2e8f0;">
+            <div style="font-size:10px;color:#64748b;margin-bottom:4px;">${ldsEmoji} Lindy Distance: <strong style="color:${ldsColor};">${lv.toFixed(3)}</strong> — 장벽 ${ldsInfo.barrier}${ldsInfo.unit}까지 ${remainStr}${ldsInfo.unit} ${remainDir}</div>
+            <div style="background:#e2e8f0;border-radius:3px;height:5px;overflow:hidden;">
+                <div style="height:100%;background:${ldsColor};width:${pct}%;border-radius:3px;"></div>
+            </div>
+        </div>`;
+    }
+
     return `
 <details class="ind-detail" data-key="${key}"${openAttr}>
   <summary class="ind-summary">
@@ -2184,6 +2264,7 @@ function buildIndicatorCard(key, ind, prev, week, interp, thresh, startOpen) {
     </div>
     ${interpTxt ? `<div style="font-size:11px;color:#64748b;line-height:1.55;margin-bottom:6px;">${interpTxt}</div>` : ''}
     ${threshHtml}
+    ${ldsHtml}
     <div id="chart-ind-${key}" style="height:100px;margin-top:10px;"></div>
   </div>
 </details>`;
