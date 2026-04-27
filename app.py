@@ -2130,21 +2130,25 @@ def _http_get(url: str, timeout: int = 20) -> str | None:
 
 
 def _parse_multpl_table(body: str) -> list[tuple[str, float]]:
-    """multpl.com 테이블 HTML 파싱 (내부 <a> 태그 포함 대응).
+    """multpl.com 테이블 HTML 파싱 (내부 <a> 태그, HTML entity, † 등 대응).
     Returns [(YYYY-MM-01, float_value), ...]
     """
     import re as _re
+    import html as _html
     from datetime import datetime as _dt
 
     _MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
     result = []
-    # <tr>...</tr> 단위로 추출 → 각 <td> 내부 태그 제거
     for row_html in _re.findall(r"<tr[^>]*>(.*?)</tr>", body, _re.DOTALL):
         cells = _re.findall(r"<td[^>]*>(.*?)</td>", row_html, _re.DOTALL)
         if len(cells) < 2:
             continue
         date_text = _re.sub(r"<[^>]+>", "", cells[0]).strip()
-        val_text  = _re.sub(r"<[^>]+>", "", cells[1]).strip()
+        # HTML entity 디코딩 후 숫자/소수점/마이너스만 추출 (†, &#x2002;, \n 등 제거)
+        val_raw   = _html.unescape(_re.sub(r"<[^>]+>", "", cells[1]))
+        val_match = _re.search(r"-?[\d]+\.?[\d]*", val_raw)
+        if not val_match:
+            continue
         # 날짜 파싱: "Apr 1, 2024" 또는 "Apr 2024" 등
         m = _re.search(rf"({_MONTHS})\s+\d{{1,2}},?\s+(\d{{4}})", date_text)
         if not m:
@@ -2159,7 +2163,7 @@ def _parse_multpl_table(body: str) -> list[tuple[str, float]]:
             except Exception:
                 continue
         try:
-            val = float(val_text.replace(",", ""))
+            val = float(val_match.group())
             if val > 0:
                 result.append((d.strftime("%Y-%m-01"), val))
         except Exception:

@@ -16,6 +16,7 @@ import os
 import sqlite3
 import urllib.request
 import re
+import html
 
 # ── 경로 설정 (dashboard/ 하위에서 실행되는 경우 대비) ─────────────
 _this_dir = os.path.dirname(os.path.abspath(__file__))
@@ -57,42 +58,44 @@ for name, url in _URLS:
 
 
 # ── 2. multpl.com PE HTML 파싱 진단 ────────────────────────────────
-print("\n[2] multpl.com S&P 500 PE HTML 파싱")
+def parse_multpl(body):
+    """app.py _parse_multpl_table() 와 동일 로직 (HTML entity + † 대응)."""
+    found = []
+    for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", body, re.DOTALL):
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.DOTALL)
+        if len(cells) < 2:
+            continue
+        d_text  = re.sub(r"<[^>]+>", "", cells[0]).strip()
+        val_raw = html.unescape(re.sub(r"<[^>]+>", "", cells[1]))
+        val_m   = re.search(r"-?[\d]+\.?[\d]*", val_raw)
+        if val_m:
+            found.append((d_text, val_m.group(), val_raw.strip()))
+    return found
+
+
+print("\n[2] multpl.com S&P 500 PE HTML 파싱 (HTML entity 대응)")
 body, err = http_get("https://www.multpl.com/s-p-500-pe-ratio/table/by-month")
 if err:
     print(f"  ❌ HTTP 오류: {err}")
 else:
-    # tr → td 추출 (태그 제거 포함)
-    found = []
-    for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", body, re.DOTALL)[:20]:
-        cells = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.DOTALL)
-        if len(cells) >= 2:
-            d_text = re.sub(r"<[^>]+>", "", cells[0]).strip()
-            v_text = re.sub(r"<[^>]+>", "", cells[1]).strip()
-            found.append((d_text, v_text))
+    found = parse_multpl(body)
     print(f"  파싱된 행 수: {len(found)}")
-    for row in found[:5]:
-        print(f"  날짜: '{row[0]}' | 값: '{row[1]}'")
+    for d, v, raw in found[:5]:
+        print(f"  날짜: '{d}' | raw: {repr(raw[:30])} | float: {v}")
     if not found:
         print(f"  ⚠️  tr/td 구조를 찾지 못함. HTML 샘플:\n{body[2000:3000]}")
 
 
 # ── 3. multpl.com CAPE HTML 파싱 진단 ──────────────────────────────
-print("\n[3] multpl.com Shiller CAPE HTML 파싱")
+print("\n[3] multpl.com Shiller CAPE HTML 파싱 (HTML entity 대응)")
 body, err = http_get("https://www.multpl.com/shiller-pe/table/by-month")
 if err:
     print(f"  ❌ HTTP 오류: {err}")
 else:
-    found = []
-    for row_html in re.findall(r"<tr[^>]*>(.*?)</tr>", body, re.DOTALL)[:20]:
-        cells = re.findall(r"<td[^>]*>(.*?)</td>", row_html, re.DOTALL)
-        if len(cells) >= 2:
-            d_text = re.sub(r"<[^>]+>", "", cells[0]).strip()
-            v_text = re.sub(r"<[^>]+>", "", cells[1]).strip()
-            found.append((d_text, v_text))
+    found = parse_multpl(body)
     print(f"  파싱된 행 수: {len(found)}")
-    for row in found[:5]:
-        print(f"  날짜: '{row[0]}' | 값: '{row[1]}'")
+    for d, v, raw in found[:5]:
+        print(f"  날짜: '{d}' | raw: {repr(raw[:30])} | float: {v}")
     if not found:
         print(f"  ⚠️  tr/td 구조를 찾지 못함. HTML 샘플:\n{body[2000:3000]}")
 
