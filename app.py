@@ -362,6 +362,43 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_jpy_daily_period ON jpy_swap_daily(period)")
     log.info("Stage 2.0 신규 테이블 준비 완료 (jpy_swap_daily)")
 
+    # ── Stage 3.5: Valuation 지표 테이블 ────────────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS valuation_erp (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            date         TEXT    NOT NULL UNIQUE,
+            spy_pe       REAL,
+            treasury_10y REAL,
+            erp_pct      REAL,
+            fetched_at   TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_erp_date ON valuation_erp(date)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS valuation_buffett (
+            id           INTEGER PRIMARY KEY AUTOINCREMENT,
+            date         TEXT    NOT NULL UNIQUE,
+            w5000        REAL,
+            gdp_billions REAL,
+            buffett_pct  REAL,
+            percentile   REAL,
+            fetched_at   TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_buffett_date ON valuation_buffett(date)")
+
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS valuation_cape (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            date       TEXT    NOT NULL UNIQUE,
+            cape_ratio REAL    NOT NULL,
+            fetched_at TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_cape_date ON valuation_cape(date)")
+    log.info("Stage 3.5 Valuation 테이블 준비 완료 (valuation_erp, valuation_buffett, valuation_cape)")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS jpy_swap_status (
             id         INTEGER PRIMARY KEY DEFAULT 1,
@@ -624,6 +661,10 @@ INDICATOR_INTERPRETATIONS: dict[str, str] = {
     "vix":            "주식 내재 변동성. 자금·신용 스트레스 대비 낮으면 Inverse Turkey 패턴 (시장 미반응 위험).",
     "skew":           "CBOE SKEW. 상승 시 꼬리 위험(tail risk) 프리미엄 급등 — 블랙스완 헤지 수요 증가.",
     "move_vix_ratio": "MOVE/VIX 비율. 상승 시 채권 스트레스가 주식 시장 선행 — Inverse Turkey 의 핵심 전조 지표.",
+    # Stage 3.5 Valuation
+    "erp":     "Equity Risk Premium = 주식 수익률(1/PE) − 10Y 국채. 낮을수록 주식이 채권 대비 비쌈. 금리 상승기 급락 경보.",
+    "buffett": "Buffett Indicator = Wilshire 5000 / GDP × 100. 2015년 이후 percentile 기반 과대평가 척도.",
+    "cape":    "Shiller CAPE (10년 평균 실질이익 기준 PE). 장기 평균 17, 닷컴 피크 44. 현재 수준이 역사적 어느 위치인지 판단.",
 }
 
 # ── 지표별 임계값 설명 (단계별 텍스트, 상세 카드 표시용) ─────────
@@ -646,6 +687,10 @@ INDICATOR_THRESHOLDS: dict[str, list] = {
     "vix":            ["< 20",     "20 ~ 30",    "30 ~ 45",      "> 45"],
     "skew":           ["< 130",    "130 ~ 145",  "145 ~ 160",    "> 160"],
     "move_vix_ratio": ["< 4",      "4 ~ 5",      "5 ~ 6",        "> 6"],
+    # Stage 3.5 Valuation
+    "erp":     ["> 3.0%",    "1.5 ~ 3.0%",  "0.0 ~ 1.5%",   "< 0.0%"],
+    "buffett": ["< 50th %ile","50~75th %ile","75~90th %ile", "> 90th %ile"],
+    "cape":    ["< 20",      "20 ~ 28",     "28 ~ 36",       "> 36"],
 }
 
 # ── Stage 2.1: Coverage Ratio — v1.0 spec 대비 현재 구현 현황 ────────────
@@ -654,7 +699,7 @@ INDICATOR_THRESHOLDS: dict[str, list] = {
 LAYER_SPEC: dict = {
     1:           {"spec_indicators": 12, "spec_max_score": 45},
     2:           {"spec_indicators":  8, "spec_max_score": 30},  # CP-EFFR 포함 8개, Korea CDS 미구현
-    3:           {"spec_indicators":  7, "spec_max_score": 15},
+    3:           {"spec_indicators": 10, "spec_max_score": 22},  # Stage 3.5: +3 Valuation (7→10, 15→22)
     "divergence":{"spec_indicators":  5, "spec_max_score": 10},
 }
 
@@ -836,6 +881,44 @@ def calculate_composite_lds(snapshot: dict) -> dict:
         "individual": individual,
         "tier":       tier,
         "alert":      composite < 0.15,
+    }
+
+
+def calculate_valuation_composite(snapshot: dict) -> dict:
+    """3개 Valuation 지표 (ERP/Buffett/CAPE) 의 가중 평균 normalized score.
+    Regime Map Y축으로 사용. 0=저평가, 1=극단적 과대평가.
+    """
+    _VAL_SPEC = {
+        "erp":     {"weight": 3, "normal": 3.0, "crisis": 0.0, "direction": "inverse"},
+        "buffett": {"weight": 2, "normal": 50.0, "crisis": 90.0, "direction": "percentile"},
+        "cape":    {"weight": 2, "normal": 20.0, "crisis": 36.0, "direction": "normal"},
+    }
+    weighted_sum = 0.0
+    total_weight = 0
+    individual: dict = {}
+
+    for key, cfg in _VAL_SPEC.items():
+        ind = snapshot.get(key, {})
+        val = ind.get("value")
+        if val is None:
+            continue
+        if cfg["direction"] == "inverse":
+            norm = max(0.0, min(1.0, (cfg["normal"] - val) / (cfg["normal"] - cfg["crisis"])))
+        elif cfg["direction"] == "percentile":
+            pct = ind.get("percentile", 50.0) or 50.0
+            norm = max(0.0, min(1.0, (pct - cfg["normal"]) / (cfg["crisis"] - cfg["normal"])))
+        else:
+            norm = max(0.0, min(1.0, (val - cfg["normal"]) / (cfg["crisis"] - cfg["normal"])))
+        individual[key] = {"value": val, "norm": round(norm, 3), "tier": ind.get("tier", "normal")}
+        weighted_sum += norm * cfg["weight"]
+        total_weight += cfg["weight"]
+
+    composite = round(weighted_sum / total_weight, 3) if total_weight > 0 else 0.0
+    return {
+        "composite":    composite,
+        "individual":   individual,
+        "regime_label": "high" if composite > 0.5 else "low",
+        "data_count":   total_weight,
     }
 
 
@@ -1074,6 +1157,47 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
                 tier=_tier(ratio, [(4,"normal"), (5,"watch"), (6,"stress"), (None,"crisis")]),
             )
 
+    # ── Layer 3-e: ERP — cap 3pt ─────────────────────────────────
+    _erp_conn = get_db()
+    _erp_row  = _erp_conn.execute(
+        "SELECT date, spy_pe, treasury_10y, erp_pct FROM valuation_erp ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    _erp_conn.close()
+    if _erp_row and _erp_row["erp_pct"] is not None:
+        v = _erp_row["erp_pct"]
+        inds["erp"] = dict(
+            name="Equity Risk Premium", layer=3, cap=3, value=round(v, 3), unit="%",
+            tier=_tier(-v, [(-3.0, "normal"), (-1.5, "watch"), (0.0, "stress"), (None, "crisis")]),
+        )
+
+    # ── Layer 3-f: Buffett Indicator — cap 2pt ───────────────────
+    _buf_conn = get_db()
+    _buf_row  = _buf_conn.execute(
+        "SELECT date, buffett_pct, percentile FROM valuation_buffett ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    _buf_conn.close()
+    if _buf_row and _buf_row["buffett_pct"] is not None:
+        v   = _buf_row["buffett_pct"]
+        pct = _buf_row["percentile"] or 50.0
+        inds["buffett"] = dict(
+            name="Buffett Indicator", layer=3, cap=2, value=round(v, 1), unit="%",
+            tier=("normal" if pct < 50 else "watch" if pct < 75 else "stress" if pct < 90 else "crisis"),
+            percentile=round(pct, 1),
+        )
+
+    # ── Layer 3-g: Shiller CAPE — cap 2pt ───────────────────────
+    _cape_conn = get_db()
+    _cape_row  = _cape_conn.execute(
+        "SELECT date, cape_ratio FROM valuation_cape ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    _cape_conn.close()
+    if _cape_row:
+        v = _cape_row["cape_ratio"]
+        inds["cape"] = dict(
+            name="Shiller CAPE", layer=3, cap=2, value=round(v, 1), unit="",
+            tier=_tier(v, [(20, "normal"), (28, "watch"), (36, "stress"), (None, "crisis")]),
+        )
+
     # ── 레이어별 점수 계산 ────────────────────────────────────────
     l1 = l2 = l3 = 0.0
     for ind in inds.values():
@@ -1084,12 +1208,12 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
 
     l1 = min(round(l1, 2), 45.0)
     l2 = min(round(l2, 2), 30.0)
-    l3 = min(round(l3, 2), 15.0)
+    l3 = min(round(l3, 2), 22.0)  # Stage 3.5: 15 → 22
 
     # ── Cross-Layer Divergence — 10pt 상한 ───────────────────────
     l1_sev = l1 / 45
     l2_sev = l2 / 30
-    l3_sev = l3 / 15 if l3 > 0 else 0.0
+    l3_sev = l3 / 22 if l3 > 0 else 0.0  # Stage 3.5: /15 → /22
     div = round(min(max(((l1_sev + l2_sev) / 2 - l3_sev) * 10, 0), 10), 2)
     total = round(l1 + l2 + l3 + div, 1)
 
@@ -1408,6 +1532,31 @@ def start_scheduler() -> BackgroundScheduler:
         **_JOB_DEFAULTS,
     )
     log.info("[JPY Daily] 스케줄 등록: 매일 08:00 KST")
+
+    # Stage 3.5: Valuation 지표 (매일 07:30 / 22:30 KST)
+    scheduler.add_job(
+        refresh_erp,
+        trigger=CronTrigger(hour="7,22", minute="30", timezone="Asia/Seoul"),
+        id="refresh_erp",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[ERP] 스케줄 등록: 매일 7,22시 30분 KST")
+
+    scheduler.add_job(
+        refresh_buffett,
+        trigger=CronTrigger(hour="7,22", minute="35", timezone="Asia/Seoul"),
+        id="refresh_buffett",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[Buffett] 스케줄 등록: 매일 7,22시 35분 KST")
+
+    scheduler.add_job(
+        refresh_cape,
+        trigger=CronTrigger(hour="7", minute="40", timezone="Asia/Seoul"),
+        id="refresh_cape",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[CAPE] 스케줄 등록: 매일 07:40 KST (월별 갱신, 변경 시만 저장)")
 
     scheduler.start()
     log.info("스케줄러 시작 완료 (misfire_grace=5분, coalesce=True, max_instances=1)")
@@ -1964,6 +2113,355 @@ def refresh_hyg() -> int:
         log.error(f"[HYG] 수집 오류: {exc}")
         telegram_alerts.record_error("hyg_prices", str(exc))
         return 0
+
+
+# ── Stage 3.5: Valuation 데이터 수집 ────────────────────────────────
+
+
+def _http_get(url: str, timeout: int = 20) -> str | None:
+    """urllib.request 기반 HTTP GET. 성공 시 본문 문자열, 실패 시 None."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except Exception as e:
+        log.debug(f"[HTTP] GET {url} 실패: {e}")
+        return None
+
+
+def _fetch_spy_pe() -> float | None:
+    """S&P 500 PE 취득. SPY trailingPE (yfinance) → multpl.com 월별 fallback."""
+    # Option A: yfinance SPY
+    if _yf_available:
+        try:
+            import yfinance as yf
+            info = yf.Ticker("SPY").info
+            pe = info.get("trailingPE") or info.get("forwardPE")
+            if pe and float(pe) > 0:
+                log.info(f"[ERP] SPY trailingPE: {pe}")
+                return float(pe)
+        except Exception as e:
+            log.debug(f"[ERP] yfinance SPY PE 실패: {e}")
+
+    # Option B: multpl.com 월별 스크래핑
+    import re as _re
+    body = _http_get("https://www.multpl.com/s-p-500-pe-ratio/table/by-month", timeout=15)
+    if body:
+        matches = _re.findall(r"<td[^>]*>[\d,\.]+</td>\s*<td[^>]*>([\d\.]+)</td>", body)
+        if matches:
+            pe = float(matches[0])
+            log.info(f"[ERP] multpl.com PE fallback: {pe}")
+            return pe
+
+    log.warning("[ERP] PE 취득 실패 (yfinance + multpl.com 모두 실패)")
+    return None
+
+
+def _fetch_multpl_pe_history() -> list[tuple[str, float]]:
+    """multpl.com 에서 S&P 500 PE 월별 이력 스크래핑. [(YYYY-MM-DD, pe_value), ...]"""
+    import re as _re
+    from datetime import datetime as _dt
+    body = _http_get("https://www.multpl.com/s-p-500-pe-ratio/table/by-month", timeout=20)
+    if not body:
+        log.warning("[ERP] multpl.com PE 이력 스크래핑 실패")
+        return []
+    rows = _re.findall(
+        r"<td[^>]*>((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4})</td>"
+        r"\s*<td[^>]*>([\d\.]+)</td>",
+        body,
+    )
+    result = []
+    for date_str, pe_str in rows:
+        try:
+            d = _dt.strptime(date_str.strip(), "%b %d, %Y")
+            result.append((d.strftime("%Y-%m-01"), float(pe_str)))
+        except Exception:
+            continue
+    return result
+
+
+def _fetch_gdp_history() -> dict[str, float]:
+    """FRED GDP 분기별 이력 반환. {date: gdp_billions}"""
+    rows = fetch_fred_observations("GDP", limit=60)
+    if not rows:
+        return {}
+    return {r["date"]: float(r["value"]) for r in rows if r.get("value") not in (None, ".")}
+
+
+def _gdp_for_date(date_str: str, gdp_map: dict[str, float]) -> float | None:
+    """특정 날짜에 유효한 직전 분기 GDP 반환 (forward-fill)."""
+    if not gdp_map:
+        return None
+    sorted_dates = sorted(gdp_map.keys())
+    result = None
+    for d in sorted_dates:
+        if d <= date_str:
+            result = gdp_map[d]
+        else:
+            break
+    return result
+
+
+def _buffett_percentile(current_pct: float, conn) -> float:
+    """현재 Buffett 비율의 2015년 이후 분포 내 percentile 산출."""
+    rows = conn.execute(
+        "SELECT buffett_pct FROM valuation_buffett "
+        "WHERE date >= '2015-01-01' AND buffett_pct IS NOT NULL ORDER BY buffett_pct"
+    ).fetchall()
+    if len(rows) < 20:
+        return 50.0
+    ratios = [r[0] for r in rows]
+    count_below = sum(1 for r in ratios if r <= current_pct)
+    return round(count_below / len(ratios) * 100, 1)
+
+
+def refresh_erp() -> int:
+    """Equity Risk Premium = (1/PE)*100 - DGS10 일별 수집 → DB 저장.
+
+    PE 소스: SPY trailingPE (yfinance) → multpl.com 월별 fallback.
+    Backfill: existing==0 시 2015년부터 multpl.com PE + FRED DGS10 이력.
+    """
+    conn = get_db()
+    try:
+        existing = conn.execute("SELECT COUNT(*) FROM valuation_erp").fetchone()[0]
+        saved = 0
+
+        if existing == 0:
+            log.info("[ERP] DB 비어있음 — 2015년부터 backfill 시작")
+            pe_history = _fetch_multpl_pe_history()  # [(YYYY-MM-DD, pe), ...]
+            dgs10_rows = fetch_fred_observations("DGS10", limit=1000) or []
+            dgs10_map = {r["date"]: float(r["value"]) for r in dgs10_rows
+                         if r.get("value") not in (None, ".", "") and r["date"] >= "2015-01-01"}
+
+            pe_map = {d: pe for d, pe in pe_history if d >= "2015-01-01"}
+            # PE는 월별, DGS10은 일별 → PE를 일별로 forward-fill하여 매칭
+            for date_str, dgs10 in sorted(dgs10_map.items()):
+                month_key = date_str[:7] + "-01"
+                pe = pe_map.get(month_key)
+                if pe is None:
+                    continue
+                erp = round((1.0 / pe) * 100 - dgs10, 3)
+                cur = conn.execute(
+                    "INSERT OR IGNORE INTO valuation_erp (date, spy_pe, treasury_10y, erp_pct, fetched_at) "
+                    "VALUES (?,?,?,?,?)",
+                    (date_str, round(pe, 2), round(dgs10, 4), erp, now_kst_str()),
+                )
+                saved += cur.rowcount
+
+            conn.commit()
+            log.info(f"[ERP] backfill 완료: {saved}건")
+        else:
+            # 일별 갱신
+            pe = _fetch_spy_pe()
+            dgs10_rows = fetch_fred_observations("DGS10", limit=3) or []
+            if not dgs10_rows:
+                log.warning("[ERP] DGS10 취득 실패")
+                return 0
+            latest_row = max(dgs10_rows, key=lambda r: r["date"])
+            dgs10 = float(latest_row["value"]) if latest_row.get("value") not in (None, ".") else None
+            if dgs10 is None:
+                log.warning("[ERP] DGS10 값 없음")
+                return 0
+
+            if pe is None:
+                # PE 없음: 가장 최근 저장된 PE 재사용
+                last = conn.execute(
+                    "SELECT spy_pe FROM valuation_erp WHERE spy_pe IS NOT NULL ORDER BY date DESC LIMIT 1"
+                ).fetchone()
+                if last:
+                    pe = last["spy_pe"]
+                    log.info(f"[ERP] PE fallback → 최근 저장값 {pe}")
+                else:
+                    log.warning("[ERP] PE 취득 불가 — 스킵")
+                    return 0
+
+            erp = round((1.0 / pe) * 100 - dgs10, 3)
+            date_str = latest_row["date"]
+            cur = conn.execute(
+                "INSERT OR REPLACE INTO valuation_erp (date, spy_pe, treasury_10y, erp_pct, fetched_at) "
+                "VALUES (?,?,?,?,?)",
+                (date_str, round(pe, 2), round(dgs10, 4), erp, now_kst_str()),
+            )
+            saved = cur.rowcount
+            conn.commit()
+            log.info(f"[ERP] 갱신: {date_str} PE={pe:.1f} DGS10={dgs10:.2f}% ERP={erp:.3f}%")
+
+        return saved
+    except Exception as exc:
+        log.error(f"[ERP] 수집 오류: {exc}")
+        return 0
+    finally:
+        conn.close()
+
+
+def refresh_buffett() -> int:
+    """Buffett Indicator = ^W5000 / GDP_billions * 100 일별 수집 → DB 저장.
+
+    W5000: yfinance ^W5000 일별 이력.
+    GDP: FRED GDP 분기별 (직전 분기 forward-fill).
+    Tier: percentile 기반 (2015~).
+    """
+    if not _yf_available:
+        log.warning("[Buffett] yfinance 미설치 — 스킵")
+        return 0
+    try:
+        import yfinance as yf
+        conn = get_db()
+        existing = conn.execute("SELECT COUNT(*) FROM valuation_buffett").fetchone()[0]
+
+        if existing == 0:
+            log.info("[Buffett] DB 비어있음 — 2015년부터 backfill 시작")
+            t = yf.Ticker("^W5000")
+            hist = t.history(start="2015-01-01", interval="1d")
+        else:
+            t = yf.Ticker("^W5000")
+            hist = t.history(period="10d", interval="1d")
+
+        if hist.empty:
+            log.warning("[Buffett] ^W5000 데이터 없음")
+            conn.close()
+            return 0
+
+        gdp_map = _fetch_gdp_history()
+        if not gdp_map:
+            log.warning("[Buffett] FRED GDP 취득 실패")
+            conn.close()
+            return 0
+
+        saved = 0
+        rows_to_insert = []
+        for ts, row in hist.iterrows():
+            date_str = ts.date().isoformat()
+            w5000 = round(float(row["Close"]), 2)
+            gdp = _gdp_for_date(date_str, gdp_map)
+            if gdp is None or gdp <= 0:
+                continue
+            buffett_pct = round(w5000 / gdp * 100, 2)
+            rows_to_insert.append((date_str, w5000, round(gdp, 1), buffett_pct))
+
+        for date_str, w5000, gdp, bpct in rows_to_insert:
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO valuation_buffett "
+                "(date, w5000, gdp_billions, buffett_pct, percentile, fetched_at) "
+                "VALUES (?,?,?,?,?,?)",
+                (date_str, w5000, gdp, bpct, None, now_kst_str()),
+            )
+            saved += cur.rowcount
+        conn.commit()
+
+        # percentile 재계산 (새로 삽입된 행 포함)
+        all_rows = conn.execute(
+            "SELECT date, buffett_pct FROM valuation_buffett "
+            "WHERE date >= '2015-01-01' AND buffett_pct IS NOT NULL ORDER BY date"
+        ).fetchall()
+        all_vals = sorted([r["buffett_pct"] for r in all_rows])
+        n = len(all_vals)
+        if n >= 20:
+            for r in all_rows:
+                cnt = sum(1 for v in all_vals if v <= r["buffett_pct"])
+                pct = round(cnt / n * 100, 1)
+                conn.execute(
+                    "UPDATE valuation_buffett SET percentile=? WHERE date=?",
+                    (pct, r["date"]),
+                )
+            conn.commit()
+
+        conn.close()
+        log.info(f"[Buffett] {saved}건 저장 (총 {n + saved}건, percentile 재계산 완료)")
+        return saved
+    except Exception as exc:
+        log.error(f"[Buffett] 수집 오류: {exc}")
+        return 0
+
+
+def refresh_cape() -> int:
+    """Shiller CAPE 월별 수집 → DB 저장.
+
+    소스 우선순위:
+    1. shillerdata.com CSV
+    2. multpl.com Shiller PE 월별 스크래핑
+    최근 15년치만 저장 (1871~이력은 생략).
+    """
+    import re as _re
+    from datetime import datetime as _dt
+
+    cape_data: list[tuple[str, float]] = []
+
+    # 소스 1: shillerdata.com CSV
+    _SHILLER_URLS = [
+        "https://shillerdata.com/data/ie_data.csv",
+        "https://raw.githubusercontent.com/datasets/s-and-p-500/master/data/schiller.csv",
+    ]
+    for url in _SHILLER_URLS:
+        try:
+            body = _http_get(url, timeout=20)
+            if body and "CAPE" in body.upper():
+                lines = body.strip().split("\n")
+                header = [h.strip().upper() for h in lines[0].split(",")]
+                date_col = next((i for i, h in enumerate(header) if "DATE" in h or "YEAR" in h), None)
+                cape_col = next((i for i, h in enumerate(header) if "CAPE" in h or "CYCLICALLY" in h), None)
+                if date_col is not None and cape_col is not None:
+                    for line in lines[1:]:
+                        parts = line.split(",")
+                        if len(parts) <= max(date_col, cape_col):
+                            continue
+                        try:
+                            d_raw = parts[date_col].strip().strip('"')
+                            c_raw = parts[cape_col].strip().strip('"')
+                            if not c_raw or c_raw in (".", "NA", ""):
+                                continue
+                            # date formats: YYYY.MM or YYYY-MM or similar
+                            d_raw = d_raw.replace(".", "-")
+                            if len(d_raw) == 7:
+                                d_raw += "-01"
+                            d = _dt.strptime(d_raw[:10], "%Y-%m-%d").strftime("%Y-%m-01")
+                            c = float(c_raw)
+                            if d >= "2010-01-01" and c > 0:
+                                cape_data.append((d, c))
+                        except Exception:
+                            continue
+                if cape_data:
+                    log.info(f"[CAPE] shillerdata.com CSV: {len(cape_data)}건")
+                    break
+        except Exception as e:
+            log.debug(f"[CAPE] {url} 실패: {e}")
+
+    # 소스 2: multpl.com fallback
+    if not cape_data:
+        cape_body = _http_get("https://www.multpl.com/shiller-pe/table/by-month", timeout=20)
+        if cape_body:
+            rows = _re.findall(
+                r"<td[^>]*>((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4})</td>"
+                r"\s*<td[^>]*>([\d\.]+)</td>",
+                cape_body,
+            )
+            for date_str, cape_str in rows:
+                try:
+                    d = _dt.strptime(date_str.strip(), "%b %d, %Y")
+                    if d.year >= 2010:
+                        cape_data.append((d.strftime("%Y-%m-01"), float(cape_str)))
+                except Exception:
+                    continue
+            log.info(f"[CAPE] multpl.com fallback: {len(cape_data)}건")
+        else:
+            log.warning("[CAPE] multpl.com CAPE 스크래핑 실패")
+
+    if not cape_data:
+        log.warning("[CAPE] 데이터 취득 실패")
+        return 0
+
+    conn = get_db()
+    saved = 0
+    for date_str, cape in cape_data:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO valuation_cape (date, cape_ratio, fetched_at) VALUES (?,?,?)",
+            (date_str, round(cape, 2), now_kst_str()),
+        )
+        saved += cur.rowcount
+    conn.commit()
+    conn.close()
+    log.info(f"[CAPE] {saved}건 신규 저장")
+    return saved
 
 
 # ── Discount Window / TGA / SOFR90d (FRED API) ───────────────────
@@ -2621,8 +3119,21 @@ def signal_desk_data():
         raw_total = latest["total_score"] or 0.0
         coverage  = _coverage_from_snapshot(snapshot)
         norm      = _normalized_score(snapshot, raw_total)
-        lds       = calculate_composite_lds(snapshot)
+        lds           = calculate_composite_lds(snapshot)
         telegram_alerts.alert_lindy_collapse(lds)
+        val_composite = calculate_valuation_composite(snapshot)
+        l1_score_val  = latest["l1_score"] or 0.0
+        regime = {
+            "l1_norm":       round(l1_score_val / 45, 3),
+            "val_composite": val_composite["composite"],
+            "quadrant": (
+                "crash_risk"       if l1_score_val / 45 > 0.5 and val_composite["composite"] > 0.5 else
+                "bubble_expansion" if l1_score_val / 45 <= 0.5 and val_composite["composite"] > 0.5 else
+                "strong_long"      if l1_score_val / 45 <= 0.5 and val_composite["composite"] <= 0.5 else
+                "value_trap"
+            ),
+            "individual": val_composite["individual"],
+        }
         result = {
             "total_score":    raw_total,
             "total_tier":     latest["total_tier"],
@@ -2645,6 +3156,8 @@ def signal_desk_data():
             "coverage":          coverage,
             "normalized":        norm,
             "lds":               lds,
+            "valuation":         val_composite,
+            "regime":            regime,
             "history":           [dict(r) for r in history],
         }
     else:
@@ -3741,7 +4254,26 @@ def _startup_full_refresh() -> None:
     except Exception as exc:
         log.error(f"[Startup] JPY daily snapshot 오류: {exc}")
 
-    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 2.0 포함)")
+    # 15. Stage 3.5: Valuation 지표 초기 로드 (ERP / Buffett / CAPE)
+    try:
+        conn = get_db()
+        erp_count = conn.execute("SELECT COUNT(*) FROM valuation_erp").fetchone()[0]
+        buf_count = conn.execute("SELECT COUNT(*) FROM valuation_buffett").fetchone()[0]
+        cpe_count = conn.execute("SELECT COUNT(*) FROM valuation_cape").fetchone()[0]
+        conn.close()
+        if erp_count == 0:
+            log.info("[Startup] ERP DB 비어있음 — 2015년부터 backfill 시작")
+        refresh_erp()
+        if buf_count == 0:
+            log.info("[Startup] Buffett DB 비어있음 — 2015년부터 backfill 시작")
+        refresh_buffett()
+        if cpe_count == 0:
+            log.info("[Startup] CAPE DB 비어있음 — 이력 로드 시작")
+        refresh_cape()
+    except Exception as exc:
+        log.error(f"[Startup] Valuation 초기 로드 오류: {exc}")
+
+    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 3.5 포함)")
 
 
 def _startup() -> None:
