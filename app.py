@@ -2129,6 +2129,44 @@ def _http_get(url: str, timeout: int = 20) -> str | None:
         return None
 
 
+def _parse_multpl_table(body: str) -> list[tuple[str, float]]:
+    """multpl.com 테이블 HTML 파싱 (내부 <a> 태그 포함 대응).
+    Returns [(YYYY-MM-01, float_value), ...]
+    """
+    import re as _re
+    from datetime import datetime as _dt
+
+    _MONTHS = "Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec"
+    result = []
+    # <tr>...</tr> 단위로 추출 → 각 <td> 내부 태그 제거
+    for row_html in _re.findall(r"<tr[^>]*>(.*?)</tr>", body, _re.DOTALL):
+        cells = _re.findall(r"<td[^>]*>(.*?)</td>", row_html, _re.DOTALL)
+        if len(cells) < 2:
+            continue
+        date_text = _re.sub(r"<[^>]+>", "", cells[0]).strip()
+        val_text  = _re.sub(r"<[^>]+>", "", cells[1]).strip()
+        # 날짜 파싱: "Apr 1, 2024" 또는 "Apr 2024" 등
+        m = _re.search(rf"({_MONTHS})\s+\d{{1,2}},?\s+(\d{{4}})", date_text)
+        if not m:
+            m = _re.search(rf"({_MONTHS})[a-z]*\.?\s+(\d{{4}})", date_text)
+        if not m:
+            continue
+        try:
+            d = _dt.strptime(date_text.strip(), "%b %d, %Y")
+        except ValueError:
+            try:
+                d = _dt.strptime(f"01 {m.group(1)} {m.group(2)}", "%d %b %Y")
+            except Exception:
+                continue
+        try:
+            val = float(val_text.replace(",", ""))
+            if val > 0:
+                result.append((d.strftime("%Y-%m-01"), val))
+        except Exception:
+            continue
+    return result
+
+
 def _fetch_spy_pe() -> float | None:
     """S&P 500 PE 취득. SPY trailingPE (yfinance) → multpl.com 월별 fallback."""
     # Option A: yfinance SPY
@@ -2144,12 +2182,11 @@ def _fetch_spy_pe() -> float | None:
             log.debug(f"[ERP] yfinance SPY PE 실패: {e}")
 
     # Option B: multpl.com 월별 스크래핑
-    import re as _re
     body = _http_get("https://www.multpl.com/s-p-500-pe-ratio/table/by-month", timeout=15)
     if body:
-        matches = _re.findall(r"<td[^>]*>[\d,\.]+</td>\s*<td[^>]*>([\d\.]+)</td>", body)
-        if matches:
-            pe = float(matches[0])
+        rows = _parse_multpl_table(body)
+        if rows:
+            pe = rows[0][1]  # 가장 최근
             log.info(f"[ERP] multpl.com PE fallback: {pe}")
             return pe
 
@@ -2158,26 +2195,14 @@ def _fetch_spy_pe() -> float | None:
 
 
 def _fetch_multpl_pe_history() -> list[tuple[str, float]]:
-    """multpl.com 에서 S&P 500 PE 월별 이력 스크래핑. [(YYYY-MM-DD, pe_value), ...]"""
-    import re as _re
-    from datetime import datetime as _dt
+    """multpl.com 에서 S&P 500 PE 월별 이력 스크래핑. [(YYYY-MM-01, pe_value), ...]"""
     body = _http_get("https://www.multpl.com/s-p-500-pe-ratio/table/by-month", timeout=20)
     if not body:
-        log.warning("[ERP] multpl.com PE 이력 스크래핑 실패")
+        log.warning("[ERP] multpl.com PE 이력 스크래핑 실패 (네트워크)")
         return []
-    rows = _re.findall(
-        r"<td[^>]*>((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4})</td>"
-        r"\s*<td[^>]*>([\d\.]+)</td>",
-        body,
-    )
-    result = []
-    for date_str, pe_str in rows:
-        try:
-            d = _dt.strptime(date_str.strip(), "%b %d, %Y")
-            result.append((d.strftime("%Y-%m-01"), float(pe_str)))
-        except Exception:
-            continue
-    return result
+    rows = _parse_multpl_table(body)
+    log.info(f"[ERP] multpl.com PE 이력: {len(rows)}건 파싱")
+    return rows
 
 
 def _fetch_gdp_history() -> dict[str, float]:
@@ -2378,76 +2403,71 @@ def refresh_cape() -> int:
     """Shiller CAPE 월별 수집 → DB 저장.
 
     소스 우선순위:
-    1. shillerdata.com CSV
+    1. GitHub datasets/s-and-p-500 monthly.csv (PE10 열)
     2. multpl.com Shiller PE 월별 스크래핑
-    최근 15년치만 저장 (1871~이력은 생략).
+    최근 2010년~ 데이터만 저장.
     """
-    import re as _re
     from datetime import datetime as _dt
 
     cape_data: list[tuple[str, float]] = []
 
-    # 소스 1: shillerdata.com CSV
-    _SHILLER_URLS = [
-        "https://shillerdata.com/data/ie_data.csv",
-        "https://raw.githubusercontent.com/datasets/s-and-p-500/master/data/schiller.csv",
+    # 소스 1: GitHub datasets/s-and-p-500 monthly.csv (PE10 = Shiller CAPE)
+    _CSV_URLS = [
+        "https://raw.githubusercontent.com/datasets/s-and-p-500/master/data/monthly.csv",
+        "https://raw.githubusercontent.com/datasets/s-and-p-500/refs/heads/master/data/monthly.csv",
     ]
-    for url in _SHILLER_URLS:
+    for url in _CSV_URLS:
         try:
             body = _http_get(url, timeout=20)
-            if body and "CAPE" in body.upper():
-                lines = body.strip().split("\n")
-                header = [h.strip().upper() for h in lines[0].split(",")]
-                date_col = next((i for i, h in enumerate(header) if "DATE" in h or "YEAR" in h), None)
-                cape_col = next((i for i, h in enumerate(header) if "CAPE" in h or "CYCLICALLY" in h), None)
-                if date_col is not None and cape_col is not None:
-                    for line in lines[1:]:
-                        parts = line.split(",")
-                        if len(parts) <= max(date_col, cape_col):
-                            continue
-                        try:
-                            d_raw = parts[date_col].strip().strip('"')
-                            c_raw = parts[cape_col].strip().strip('"')
-                            if not c_raw or c_raw in (".", "NA", ""):
-                                continue
-                            # date formats: YYYY.MM or YYYY-MM or similar
-                            d_raw = d_raw.replace(".", "-")
-                            if len(d_raw) == 7:
-                                d_raw += "-01"
-                            d = _dt.strptime(d_raw[:10], "%Y-%m-%d").strftime("%Y-%m-01")
-                            c = float(c_raw)
-                            if d >= "2010-01-01" and c > 0:
-                                cape_data.append((d, c))
-                        except Exception:
-                            continue
-                if cape_data:
-                    log.info(f"[CAPE] shillerdata.com CSV: {len(cape_data)}건")
-                    break
+            if not body:
+                continue
+            lines = [l.strip() for l in body.strip().split("\n") if l.strip()]
+            if not lines:
+                continue
+            header = [h.strip().strip('"').upper() for h in lines[0].split(",")]
+            # 열 탐색: Date, PE10 (CAPE), 또는 CAPE
+            date_col = next((i for i, h in enumerate(header) if h in ("DATE", "YEAR", "MONTH")), None)
+            cape_col = next((i for i, h in enumerate(header) if h in ("PE10", "CAPE", "P/E10", "SHILLER PE")), None)
+            log.info(f"[CAPE] {url} header={header[:8]} date_col={date_col} cape_col={cape_col}")
+            if date_col is None or cape_col is None:
+                continue
+            for line in lines[1:]:
+                parts = line.split(",")
+                if len(parts) <= max(date_col, cape_col):
+                    continue
+                try:
+                    d_raw = parts[date_col].strip().strip('"')
+                    c_raw = parts[cape_col].strip().strip('"')
+                    if not c_raw or c_raw in (".", "NA", "", "nan"):
+                        continue
+                    # date formats: YYYY-MM-DD, YYYY-MM, YYYY.MM
+                    d_raw = d_raw.replace(".", "-")
+                    if len(d_raw) == 7:
+                        d_raw += "-01"
+                    d = _dt.strptime(d_raw[:10], "%Y-%m-%d").strftime("%Y-%m-01")
+                    c = float(c_raw)
+                    if d >= "2010-01-01" and 5 < c < 200:
+                        cape_data.append((d, c))
+                except Exception:
+                    continue
+            if cape_data:
+                log.info(f"[CAPE] GitHub datasets CSV: {len(cape_data)}건")
+                break
         except Exception as e:
             log.debug(f"[CAPE] {url} 실패: {e}")
 
-    # 소스 2: multpl.com fallback
+    # 소스 2: multpl.com 스크래핑 (내부 <a> 태그 대응 파서 사용)
     if not cape_data:
         cape_body = _http_get("https://www.multpl.com/shiller-pe/table/by-month", timeout=20)
         if cape_body:
-            rows = _re.findall(
-                r"<td[^>]*>((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)\s+\d{1,2},\s+\d{4})</td>"
-                r"\s*<td[^>]*>([\d\.]+)</td>",
-                cape_body,
-            )
-            for date_str, cape_str in rows:
-                try:
-                    d = _dt.strptime(date_str.strip(), "%b %d, %Y")
-                    if d.year >= 2010:
-                        cape_data.append((d.strftime("%Y-%m-01"), float(cape_str)))
-                except Exception:
-                    continue
-            log.info(f"[CAPE] multpl.com fallback: {len(cape_data)}건")
+            rows = _parse_multpl_table(cape_body)
+            cape_data = [(d, v) for d, v in rows if d >= "2010-01-01" and 5 < v < 200]
+            log.info(f"[CAPE] multpl.com fallback: {len(cape_data)}건 파싱")
         else:
-            log.warning("[CAPE] multpl.com CAPE 스크래핑 실패")
+            log.warning("[CAPE] multpl.com CAPE 스크래핑 실패 (네트워크)")
 
     if not cape_data:
-        log.warning("[CAPE] 데이터 취득 실패")
+        log.warning("[CAPE] 모든 소스 실패 — 데이터 없음")
         return 0
 
     conn = get_db()
@@ -4272,6 +4292,14 @@ def _startup_full_refresh() -> None:
         refresh_cape()
     except Exception as exc:
         log.error(f"[Startup] Valuation 초기 로드 오류: {exc}")
+
+    # 16. Valuation 수집 완료 후 TMRS 재계산 (snapshot 에 ERP/Buffett/CAPE 반영)
+    try:
+        log.info("[Startup] Valuation 수집 완료 → TMRS 재계산 시작")
+        _compute_tmrs(trigger="startup_valuation")
+        log.info("[Startup] TMRS 재계산 완료 (Valuation 포함)")
+    except Exception as exc:
+        log.error(f"[Startup] TMRS 재계산 오류: {exc}")
 
     log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 3.5 포함)")
 
