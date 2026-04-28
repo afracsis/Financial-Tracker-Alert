@@ -1241,7 +1241,8 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
     tiers_j    = json.dumps({k: v["tier"] for k, v in inds.items()}, ensure_ascii=False)
     snapshot_j = json.dumps(
         {k: {"value": v["value"], "tier": v["tier"], "name": v["name"],
-             "cap": v.get("cap"), "unit": v.get("unit",""), "layer": v.get("layer")}
+             "cap": v.get("cap"), "unit": v.get("unit",""), "layer": v.get("layer"),
+             "percentile": v.get("percentile")}
          for k, v in inds.items()},
         ensure_ascii=False,
     )
