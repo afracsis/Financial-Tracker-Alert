@@ -2969,9 +2969,9 @@ async function loadVolatility() {
                 chEl.innerHTML = `<span style="color:${col};font-weight:600;">${sign}${info.change.toFixed(2)}</span> 전일 대비`;
             }
 
-            // 변화율 배지
-            const bEl = document.getElementById(badgeId);
-            if (pct !== null && pct !== undefined) {
+            // 변화율 배지 (badgeId가 null인 경우 건너뜀)
+            const bEl = badgeId ? document.getElementById(badgeId) : null;
+            if (bEl && pct !== null && pct !== undefined) {
                 const sign = pct >= 0 ? '+' : '';
                 const bg   = up   ? 'rgba(252,129,129,0.15)' :
                              down ? 'rgba(99,179,237,0.15)' : 'rgba(113,128,150,0.15)';
