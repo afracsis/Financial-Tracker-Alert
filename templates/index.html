@@ -690,11 +690,41 @@
         </div>
         <!-- 구분선 -->
         <div style="border-top:1px solid #e2e8f0;margin-bottom:12px;"></div>
-        <!-- 하단: Inverse Turkey -->
-        <div>
-            <div style="font-size:11px;font-weight:700;letter-spacing:1.5px;color:#94a3b8;text-transform:uppercase;margin-bottom:8px;">INVERSE TURKEY</div>
-            <div id="sd-inv-turkey" style="border-radius:8px;padding:10px 14px;font-size:12px;background:#f1f5f9;color:#64748b;">
-                🦃 Inverse Turkey: 미감지
+        <!-- 하단: Inverse Turkey (좌) + Fragility Regime Map (우) -->
+        <div style="display:flex;gap:12px;align-items:flex-start;">
+            <!-- 좌 50%: Inverse Turkey -->
+            <div style="flex:1;min-width:0;">
+                <div style="font-size:11px;font-weight:700;letter-spacing:1.5px;color:#94a3b8;text-transform:uppercase;margin-bottom:8px;">INVERSE TURKEY</div>
+                <div id="sd-inv-turkey" style="border-radius:8px;padding:8px 10px;font-size:11px;background:#f1f5f9;color:#64748b;">
+                    🦃 Inverse Turkey: 미감지
+                </div>
+                <div id="sd-it-metrics" style="font-size:10px;color:#94a3b8;margin-top:5px;">—</div>
+            </div>
+            <!-- 우 50%: Fragility Regime Map -->
+            <div style="flex:1;min-width:0;">
+                <div style="font-size:11px;font-weight:700;letter-spacing:1.5px;color:#94a3b8;text-transform:uppercase;margin-bottom:8px;">FRAGILITY REGIME</div>
+                <!-- 4사분면 미니맵 -->
+                <div style="position:relative;width:100%;height:110px;border:1px solid #e2e8f0;border-radius:6px;overflow:hidden;">
+                    <!-- 사분면 배경 -->
+                    <div style="position:absolute;top:0;left:0;width:50%;height:50%;background:rgba(234,179,8,0.15);"></div>
+                    <div style="position:absolute;top:0;right:0;width:50%;height:50%;background:rgba(239,68,68,0.15);"></div>
+                    <div style="position:absolute;bottom:0;left:0;width:50%;height:50%;background:rgba(34,197,94,0.15);"></div>
+                    <div style="position:absolute;bottom:0;right:0;width:50%;height:50%;background:rgba(249,115,22,0.15);"></div>
+                    <!-- 십자 축선 -->
+                    <div style="position:absolute;top:50%;left:0;right:0;height:1px;background:rgba(0,0,0,0.08);"></div>
+                    <div style="position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(0,0,0,0.08);"></div>
+                    <!-- 사분면 라벨 -->
+                    <div style="position:absolute;top:3px;left:3px;font-size:7px;color:#b45309;opacity:0.75;line-height:1;">Bubble</div>
+                    <div style="position:absolute;top:3px;right:3px;font-size:7px;color:#dc2626;opacity:0.75;line-height:1;text-align:right;">Crash</div>
+                    <div style="position:absolute;bottom:13px;left:3px;font-size:7px;color:#16a34a;opacity:0.75;line-height:1;">Long</div>
+                    <div style="position:absolute;bottom:13px;right:3px;font-size:7px;color:#c2410c;opacity:0.75;line-height:1;text-align:right;">Trap</div>
+                    <!-- 축 라벨 -->
+                    <div style="position:absolute;bottom:2px;left:3px;font-size:7px;color:#94a3b8;">Easy</div>
+                    <div style="position:absolute;bottom:2px;right:3px;font-size:7px;color:#94a3b8;">Tight</div>
+                    <!-- 현재 위치 ★ (JS 동적 배치) -->
+                    <div id="regime-dot" style="position:absolute;font-size:13px;line-height:1;transform:translate(-50%,-50%);transition:left 0.8s ease,top 0.8s ease;left:50%;top:50%;color:#64748b;">★</div>
+                </div>
+                <div id="regime-label" style="font-size:10px;font-weight:600;margin-top:4px;color:#64748b;text-align:center;">—</div>
             </div>
         </div>
     </div>
@@ -2073,6 +2103,20 @@ function renderSignalDesk(data) {
         itEl.style.border     = 'none';
         itEl.textContent      = '🦃 Inverse Turkey: 미감지';
     }
+    // IT 보조 지표 (l12 / l3)
+    const itMetrics = document.getElementById('sd-it-metrics');
+    if (itMetrics) {
+        const l1n  = (data.l1_score || 0) / 45;
+        const l2n  = (data.l2_score || 0) / 30;
+        const l12  = ((l1n + l2n) / 2).toFixed(3);
+        const l3n  = ((data.l3_score || 0) / 22).toFixed(3);
+        itMetrics.textContent = `l12: ${l12} / l3: ${l3n}`;
+    }
+
+    // Fragility Regime Map
+    if (data.regime) {
+        updateRegimeMap(data.regime.l1_norm, data.regime.val_composite, data.regime.quadrant);
+    }
 
     // ── Indicator Status 재설계 ─────────────────────────────────
     renderIndicatorStatus(data);
@@ -2313,6 +2357,30 @@ async function loadAndRenderChart(key) {
     } catch (_) {
         el.style.display = 'none';
     }
+}
+
+// ── Fragility Regime Map ★ 동적 배치 ─────────────────────────
+function updateRegimeMap(l1Norm, valComposite, quadrant) {
+    const dot   = document.getElementById('regime-dot');
+    const label = document.getElementById('regime-label');
+    if (!dot || !label) return;
+
+    // X = l1Norm (0=left=easy, 1=right=tight), Y = valComposite (0=bottom=low, 1=top=high)
+    const x = Math.max(3, Math.min(97, (l1Norm || 0) * 100));
+    const y = Math.max(3, Math.min(97, (1 - (valComposite || 0)) * 100));
+    dot.style.left = x + '%';
+    dot.style.top  = y + '%';
+
+    const Q = {
+        crash_risk:       { text: '★ Crash Risk Zone',   color: '#dc2626' },
+        bubble_expansion: { text: '★ Bubble Expansion',  color: '#b45309' },
+        strong_long:      { text: '★ Strong Long Entry', color: '#16a34a' },
+        value_trap:       { text: '★ Value Trap',        color: '#ea580c' },
+    };
+    const q = Q[quadrant] || { text: '—', color: '#64748b' };
+    label.textContent = q.text;
+    label.style.color = q.color;
+    dot.style.color   = q.color;
 }
 
 function renderTmrsChart(history) {
