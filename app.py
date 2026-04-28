@@ -3581,6 +3581,17 @@ def get_volatility():
     vix_latest  = conn.execute("SELECT value FROM vix_index  ORDER BY date DESC LIMIT 1").fetchone()
     move_prev   = conn.execute("SELECT value FROM move_index ORDER BY date DESC LIMIT 1 OFFSET 1").fetchone()
     vix_prev    = conn.execute("SELECT value FROM vix_index  ORDER BY date DESC LIMIT 1 OFFSET 1").fetchone()
+    # vix_index DB 비어있으면 yfinance ^VIX 실시간 fallback
+    if not vix_latest and _yf_available:
+        try:
+            import yfinance as _yf_vol
+            _vh = _yf_vol.Ticker("^VIX").history(period="3d", interval="1d")
+            if not _vh.empty:
+                vix_latest = {"value": round(float(_vh["Close"].iloc[-1]), 2)}
+                if len(_vh) >= 2:
+                    vix_prev = {"value": round(float(_vh["Close"].iloc[-2]), 2)}
+        except Exception as _ve:
+            log.debug(f"[Volatility] yfinance ^VIX fallback 실패: {_ve}")
     if move_latest and vix_latest and vix_latest["value"] and vix_latest["value"] > 0:
         ratio_val  = round(move_latest["value"] / vix_latest["value"], 3)
         ratio_prev = None
@@ -4024,25 +4035,29 @@ def get_portfolio():
     - 캐시가 없거나 만료됐으면 실시간 fetch 후 반환
     """
     now = datetime.now(tz=KST)
+    force = request.args.get('force') == 'true'
     with _portfolio_lock:
         cached = _portfolio_cache.get("data")
         updated = _portfolio_cache.get("updated_at")
 
     cache_fresh = (
+        not force and
         cached is not None and
         updated is not None and
         (now - updated).total_seconds() < _PORTFOLIO_CACHE_TTL
     )
 
     if not cache_fresh:
-        # 스케줄러가 백그라운드에서 수집 중이거나 곧 수집 예정 — 즉시 Playwright 실행 금지
-        # (캐시 미스 시 HTTP 요청 스레드에서 Playwright 실행하면 OOM 위험)
         if not _portfolio_refreshing.is_set():
-            log.info("[Portfolio] 캐시 미스 — 백그라운드 갱신 요청")
+            log.info(f"[Portfolio] {'강제 갱신' if force else '캐시 미스'} — 백그라운드 갱신 요청")
             threading.Thread(target=refresh_portfolio, daemon=True, name="portfolio_bg").start()
 
     if not cached:
         return jsonify({"rows": [], "updated_at": now_kst_str(), "status": "loading"})
+
+    # force 시 갱신 중 상태 반환 → 클라이언트가 8초 후 재시도
+    if force:
+        return jsonify({**cached, "status": "refreshing"})
 
     return jsonify({**cached, "status": "ok"})
 

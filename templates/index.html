@@ -1383,6 +1383,23 @@
 <div id="pane-jpy" style="display:none;">
 <main>
 
+    <!-- 헤더: 제목 + 새로고침 버튼 -->
+    <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:14px; flex-wrap:wrap; gap:10px;">
+        <div>
+            <div style="font-size:20px;font-weight:700;color:#e2e8f0;margin-bottom:4px;">JPY Swap</div>
+            <div style="font-size:12px; color:#4a5568;">Investing.com · 스크래핑 기반</div>
+        </div>
+        <div style="display:flex; align-items:center; gap:12px;">
+            <div id="jpy-refreshing-dot" style="width:8px;height:8px;border-radius:50%;background:#68d391;display:inline-block;"></div>
+            <span id="jpy-updated" style="font-size:12px;color:#4a5568;">—</span>
+            <button onclick="loadJpy(true)" style="
+                background: rgba(99,179,237,0.15); border: 1px solid rgba(99,179,237,0.4);
+                color:#90cdf4; padding:5px 14px; border-radius:6px; font-size:12px; cursor:pointer;">
+                새로고침
+            </button>
+        </div>
+    </div>
+
     <!-- 상태 배너 -->
     <div id="jpy-status-bar" class="jpy-status-bar" style="display:none;">
         <span style="font-size:15px;">⏳</span>
@@ -3100,11 +3117,23 @@ const JPY_PERIOD_LABELS = {
     '10Y': '10년 (10Y)',
 };
 
-async function loadJpy() {
+async function loadJpy(forceRefresh = false) {
+    const dot = document.getElementById('jpy-refreshing-dot');
+    const updatedEl = document.getElementById('jpy-updated');
+    if (dot) dot.style.background = '#f6ad55';
+    if (updatedEl) updatedEl.textContent = '갱신 중...';
     try {
         // ── 1. 최신 데이터 카드 ──────────────────────────────────
-        const res = await fetch('/jpy');
+        const url = forceRefresh ? '/jpy?force=true' : '/jpy';
+        const res = await fetch(url);
         const d   = await res.json();
+
+        // 갱신 시각 표시
+        if (updatedEl) {
+            const ts = d.status?.updated_at || d.updated_at;
+            updatedEl.textContent = ts ? '갱신: ' + ts : '갱신 완료';
+        }
+        if (dot) dot.style.background = '#68d391';
 
         // 상태 배너 (d.status는 {status, message, updated_at} 객체)
         const statusBar = document.getElementById('jpy-status-bar');
@@ -3223,6 +3252,8 @@ async function loadJpy() {
 
     } catch(e) {
         console.error('[JPY] 데이터 로드 실패:', e);
+        if (dot) dot.style.background = '#fc8181';
+        if (updatedEl) updatedEl.textContent = '로드 실패';
     }
 }
 
@@ -3411,23 +3442,30 @@ async function loadPortfolio(forceRefresh = false) {
     }
 
     try {
-        const res  = await fetch('/portfolio');
+        const url  = forceRefresh ? '/portfolio?force=true' : '/portfolio';
+        const res  = await fetch(url);
         const data = await res.json();
 
         if (data.rows && data.rows.length > 0) {
-            _ptfCache     = data;
-            _ptfCacheTime = Date.now();
+            if (data.status !== 'refreshing') {
+                _ptfCache     = data;
+                _ptfCacheTime = Date.now();
+            }
             _renderPortfolio(data.rows);
-
             document.getElementById('ptf-loading').style.display = 'none';
             document.getElementById('ptf-table-wrap').style.display = '';
-            document.getElementById('ptf-updated').textContent = '갱신: ' + (data.updated_at || '—');
-            document.getElementById('ptf-status-dot').style.background = '#68d391';
+            if (data.status === 'refreshing') {
+                document.getElementById('ptf-updated').textContent = '갱신 중... (자동 재로드)';
+                document.getElementById('ptf-status-dot').style.background = '#f6ad55';
+                setTimeout(() => loadPortfolio(false), 8000);
+            } else {
+                document.getElementById('ptf-updated').textContent = '갱신: ' + (data.updated_at || '—');
+                document.getElementById('ptf-status-dot').style.background = '#68d391';
+            }
         } else if (data.status === 'loading') {
             document.getElementById('ptf-updated').textContent = '데이터 수집 중...';
             document.getElementById('ptf-status-dot').style.background = '#f6ad55';
-            // 5초 후 재시도
-            setTimeout(() => loadPortfolio(true), 5000);
+            setTimeout(() => loadPortfolio(false), 8000);
         }
     } catch(e) {
         console.error('[Portfolio] 로드 실패:', e);
