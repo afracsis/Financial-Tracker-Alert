@@ -1,0 +1,8 @@
+flask
+flask-login
+werkzeug
+apscheduler
+pytz
+requests
+yfinance
+openpyxl
