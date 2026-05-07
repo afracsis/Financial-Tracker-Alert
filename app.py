@@ -399,6 +399,31 @@ def init_db():
     conn.execute("CREATE INDEX IF NOT EXISTS idx_cape_date ON valuation_cape(date)")
     log.info("Stage 3.5 Valuation 테이블 준비 완료 (valuation_erp, valuation_buffett, valuation_cape)")
 
+    # ── Stage 3.7: Leverage / Speculation 테이블 ─────────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS leverage_margin_debt (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            date            TEXT    NOT NULL UNIQUE,
+            margin_debt_mil REAL    NOT NULL,
+            free_credit_mil REAL,
+            gdp_billions    REAL,
+            margin_gdp_pct  REAL,
+            net_credit_ratio REAL,
+            fetched_at      TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_margin_date ON leverage_margin_debt(date)")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS leverage_put_call (
+            id             INTEGER PRIMARY KEY AUTOINCREMENT,
+            date           TEXT    NOT NULL UNIQUE,
+            put_call_ratio REAL    NOT NULL,
+            fetched_at     TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_pc_date ON leverage_put_call(date)")
+    log.info("Stage 3.7 Leverage 테이블 준비 완료 (leverage_margin_debt, leverage_put_call)")
+
     conn.execute("""
         CREATE TABLE IF NOT EXISTS jpy_swap_status (
             id         INTEGER PRIMARY KEY DEFAULT 1,
@@ -665,6 +690,10 @@ INDICATOR_INTERPRETATIONS: dict[str, str] = {
     "erp":     "Equity Risk Premium = 주식 수익률(1/PE) − 10Y 국채. 낮을수록 주식이 채권 대비 비쌈. 금리 상승기 급락 경보.",
     "buffett": "Buffett Indicator = Wilshire 5000 / GDP × 100. 2015년 이후 percentile 기반 과대평가 척도.",
     "cape":    "Shiller CAPE (10년 평균 실질이익 기준 PE). 장기 평균 17, 닷컴 피크 44. 현재 수준이 역사적 어느 위치인지 판단.",
+    # Stage 3.7 Leverage / Speculation
+    "margin_gdp":       "Margin Debt / GDP. 경제 규모 대비 투자자 레버리지. 역대 최고 4.07% (2026.1). 닷컴 2.6%, 금융위기 2.5%.",
+    "net_credit_ratio": "Net Credit Ratio = Free Credit / Margin Debt. 낮을수록 투자자 현금 소진 → 강제 청산 취약성 증대.",
+    "put_call":         "CBOE Equity Put/Call Ratio. 낮을수록 콜 과다 = 투기 과열. < 0.40 는 역대 극단 과열 구간.",
 }
 
 # ── 지표별 임계값 설명 (단계별 텍스트, 상세 카드 표시용) ─────────
@@ -691,6 +720,10 @@ INDICATOR_THRESHOLDS: dict[str, list] = {
     "erp":     ["> 3.0%",    "1.5 ~ 3.0%",  "0.0 ~ 1.5%",   "< 0.0%"],
     "buffett": ["< 50th %ile","50~75th %ile","75~90th %ile", "> 90th %ile"],
     "cape":    ["< 20",      "20 ~ 28",     "28 ~ 36",       "> 36"],
+    # Stage 3.7 Leverage / Speculation
+    "margin_gdp":       ["< 2.5%",   "2.5 ~ 3.0%",  "3.0 ~ 3.8%",   "> 3.8%"],
+    "net_credit_ratio": ["> 0.40",   "0.30 ~ 0.40", "0.20 ~ 0.30",  "< 0.20"],
+    "put_call":         ["≥ 0.60",   "0.50 ~ 0.60", "0.40 ~ 0.50",  "< 0.40"],
 }
 
 # ── Stage 2.1: Coverage Ratio — v1.0 spec 대비 현재 구현 현황 ────────────
@@ -699,7 +732,7 @@ INDICATOR_THRESHOLDS: dict[str, list] = {
 LAYER_SPEC: dict = {
     1:           {"spec_indicators": 12, "spec_max_score": 45},
     2:           {"spec_indicators":  8, "spec_max_score": 30},  # CP-EFFR 포함 8개, Korea CDS 미구현
-    3:           {"spec_indicators": 10, "spec_max_score": 22},  # Stage 3.5: +3 Valuation (7→10, 15→22)
+    3:           {"spec_indicators": 13, "spec_max_score": 28},  # Stage 3.7: +3 Leverage (10→13, 22→28)
     "divergence":{"spec_indicators":  5, "spec_max_score": 10},
 }
 
@@ -1198,6 +1231,40 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
             tier=_tier(v, [(20, "normal"), (28, "watch"), (36, "stress"), (None, "crisis")]),
         )
 
+    # ── Layer 3-h: Margin Debt / GDP — cap 2pt ───────────────────
+    _mg_conn = get_db()
+    _mg_row = _mg_conn.execute(
+        "SELECT date, margin_gdp_pct, net_credit_ratio FROM leverage_margin_debt ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    _mg_conn.close()
+    if _mg_row and _mg_row["margin_gdp_pct"] is not None:
+        v = _mg_row["margin_gdp_pct"]
+        inds["margin_gdp"] = dict(
+            name="Margin Debt / GDP", layer=3, cap=2, value=round(v, 2), unit="%",
+            tier=_tier(v, [(2.5, "normal"), (3.0, "watch"), (3.8, "stress"), (None, "crisis")]),
+        )
+
+    # ── Layer 3-i: Net Credit Ratio — cap 2pt ────────────────────
+    if _mg_row and _mg_row["net_credit_ratio"] is not None:
+        v = _mg_row["net_credit_ratio"]
+        inds["net_credit_ratio"] = dict(
+            name="Net Credit Ratio", layer=3, cap=2, value=round(v, 3), unit="",
+            tier=_tier(-v, [(-0.40, "normal"), (-0.30, "watch"), (-0.20, "stress"), (None, "crisis")]),
+        )
+
+    # ── Layer 3-j: Put/Call Ratio — cap 2pt ──────────────────────
+    _pc_conn = get_db()
+    _pc_row = _pc_conn.execute(
+        "SELECT date, put_call_ratio FROM leverage_put_call ORDER BY date DESC LIMIT 1"
+    ).fetchone()
+    _pc_conn.close()
+    if _pc_row:
+        v = _pc_row["put_call_ratio"]
+        inds["put_call"] = dict(
+            name="Put/Call Ratio", layer=3, cap=2, value=round(v, 3), unit="",
+            tier=_tier(-v, [(-0.60, "normal"), (-0.50, "watch"), (-0.40, "stress"), (None, "crisis")]),
+        )
+
     # ── 레이어별 점수 계산 ────────────────────────────────────────
     l1 = l2 = l3 = 0.0
     for ind in inds.values():
@@ -1208,12 +1275,12 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
 
     l1 = min(round(l1, 2), 45.0)
     l2 = min(round(l2, 2), 30.0)
-    l3 = min(round(l3, 2), 22.0)  # Stage 3.5: 15 → 22
+    l3 = min(round(l3, 2), 28.0)  # Stage 3.7: 22 → 28
 
     # ── Cross-Layer Divergence — 10pt 상한 ───────────────────────
     l1_sev = l1 / 45
     l2_sev = l2 / 30
-    l3_sev = l3 / 22 if l3 > 0 else 0.0  # Stage 3.5: /15 → /22
+    l3_sev = l3 / 28 if l3 > 0 else 0.0  # Stage 3.7: /22 → /28
     div = round(min(max(((l1_sev + l2_sev) / 2 - l3_sev) * 10, 0), 10), 2)
     total = round(l1 + l2 + l3 + div, 1)
 
@@ -1558,6 +1625,24 @@ def start_scheduler() -> BackgroundScheduler:
         **_JOB_DEFAULTS,
     )
     log.info("[CAPE] 스케줄 등록: 매일 07:40 KST (월별 갱신, 변경 시만 저장)")
+
+    # Stage 3.7: Put/Call Ratio (일별, 07:45 + 22:45)
+    scheduler.add_job(
+        refresh_put_call,
+        trigger=CronTrigger(hour="7,22", minute="45", timezone="Asia/Seoul"),
+        id="refresh_put_call",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[Put/Call] 스케줄 등록: 매일 07:45/22:45 KST")
+
+    # Stage 3.7: Margin Debt (월별, 매월 20일 08:00 KST)
+    scheduler.add_job(
+        refresh_margin_debt,
+        trigger=CronTrigger(day="20", hour="8", minute="0", timezone="Asia/Seoul"),
+        id="refresh_margin_debt",
+        **_JOB_DEFAULTS,
+    )
+    log.info("[Margin] 스케줄 등록: 매월 20일 08:00 KST")
 
     scheduler.start()
     log.info("스케줄러 시작 완료 (misfire_grace=5분, coalesce=True, max_instances=1)")
@@ -2130,6 +2215,17 @@ def _http_get(url: str, timeout: int = 20) -> str | None:
         return None
 
 
+def _http_get_bytes(url: str, timeout: int = 30) -> bytes | None:
+    """urllib.request 기반 HTTP GET. 성공 시 raw bytes, 실패 시 None."""
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read()
+    except Exception as e:
+        log.debug(f"[HTTP] GET bytes {url} 실패: {e}")
+        return None
+
+
 def _parse_multpl_table(body: str) -> list[tuple[str, float]]:
     """multpl.com 테이블 HTML 파싱 (내부 <a> 태그, HTML entity, † 등 대응).
     Returns [(YYYY-MM-01, float_value), ...]
@@ -2486,6 +2582,260 @@ def refresh_cape() -> int:
     conn.commit()
     conn.close()
     log.info(f"[CAPE] {saved}건 신규 저장")
+    return saved
+
+
+# ── Stage 3.7: Leverage / Speculation 데이터 수집 ────────────────────
+
+
+def refresh_margin_debt() -> int:
+    """FINRA 마진 통계 Excel → GDP 조인 → leverage_margin_debt DB 저장.
+
+    FINRA URL 패턴: https://www.finra.org/sites/default/files/{YYYY-MM}/margin-statistics.xlsx
+    전략 A: FINRA 페이지 HTML 파싱으로 최신 링크 탐색.
+    전략 B (fallback): 최근 6개월 순차 시도.
+    """
+    import io as _io
+    try:
+        import openpyxl as _openpyxl
+    except ImportError:
+        log.error("[Margin] openpyxl 미설치 — pip install openpyxl 필요")
+        return 0
+
+    FINRA_PAGE = "https://www.finra.org/investors/learn-to-invest/advanced-investing/margin-statistics"
+
+    xlsx_bytes: bytes | None = None
+
+    # 전략 A: HTML 파싱으로 링크 탐색
+    page_html = _http_get(FINRA_PAGE, timeout=30)
+    if page_html:
+        import re as _re
+        links = _re.findall(r'href="([^"]*margin-statistics\.xlsx[^"]*)"', page_html, _re.I)
+        if not links:
+            links = _re.findall(r'(https://www\.finra\.org/sites/default/files/\d{4}-\d{2}/margin-statistics\.xlsx)', page_html, _re.I)
+        if links:
+            xlsx_url = links[0] if links[0].startswith("http") else f"https://www.finra.org{links[0]}"
+            log.info(f"[Margin] 전략 A: Excel URL 발견 → {xlsx_url}")
+            xlsx_bytes = _http_get_bytes(xlsx_url, timeout=60)
+
+    # 전략 B: 순차 월 fallback (최근 6개월)
+    if not xlsx_bytes:
+        log.info("[Margin] 전략 A 실패 → 전략 B (순차 월 탐색) 시작")
+        from datetime import date as _date, timedelta as _td
+        today = _date.today()
+        for delta_months in range(0, 6):
+            # 역순 월 계산
+            year = today.year
+            month = today.month - delta_months
+            while month <= 0:
+                month += 12
+                year -= 1
+            url = f"https://www.finra.org/sites/default/files/{year:04d}-{month:02d}/margin-statistics.xlsx"
+            log.debug(f"[Margin] 전략 B 시도: {url}")
+            data = _http_get_bytes(url, timeout=60)
+            if data and len(data) > 5000:
+                xlsx_bytes = data
+                log.info(f"[Margin] 전략 B 성공: {url}")
+                break
+
+    if not xlsx_bytes:
+        log.warning("[Margin] 모든 소스 실패 — FINRA Excel 다운로드 불가")
+        return 0
+
+    # Excel 파싱
+    try:
+        wb = _openpyxl.load_workbook(_io.BytesIO(xlsx_bytes), read_only=True, data_only=True)
+        ws = wb.active
+        rows = list(ws.iter_rows(values_only=True))
+        wb.close()
+    except Exception as exc:
+        log.error(f"[Margin] Excel 파싱 오류: {exc}")
+        return 0
+
+    # 헤더 탐색: Month/Year, Debit Balances (Margin), Free Credit
+    header_row_idx = None
+    header = []
+    for i, row in enumerate(rows[:10]):
+        cells = [str(c).strip().upper() if c is not None else "" for c in row]
+        if any("DEBIT" in c or "MARGIN" in c or "MONTH" in c for c in cells):
+            header_row_idx = i
+            header = cells
+            break
+
+    if header_row_idx is None:
+        log.warning("[Margin] 헤더 행 탐색 실패")
+        return 0
+
+    # 열 인덱스
+    date_col = next((i for i, h in enumerate(header) if "MONTH" in h or "YEAR" in h or "DATE" in h or "PERIOD" in h), None)
+    debit_col = next((i for i, h in enumerate(header) if "DEBIT" in h and ("MARGIN" in h or "CUSTOMER" in h)), None)
+    if debit_col is None:
+        debit_col = next((i for i, h in enumerate(header) if "DEBIT" in h), None)
+    credit_col = next((i for i, h in enumerate(header) if "FREE" in h and "CREDIT" in h), None)
+    if credit_col is None:
+        credit_col = next((i for i, h in enumerate(header) if "CREDIT" in h and "FREE" in h), None)
+
+    log.info(f"[Margin] header={header[:8]}, date_col={date_col}, debit_col={debit_col}, credit_col={credit_col}")
+
+    if date_col is None or debit_col is None:
+        log.warning("[Margin] 필수 컬럼 탐색 실패")
+        return 0
+
+    # GDP 데이터 로드 (FRED GDP, 분기별, $billion)
+    gdp_rows = fetch_fred_observations("GDP", limit=40)
+    gdp_map: dict[str, float] = {}
+    for gdate, gval in gdp_rows:
+        # YYYY-Q 형식이 아닌 YYYY-MM-DD 형식
+        gdp_map[gdate[:7]] = gval  # YYYY-MM → GDP
+
+    def _gdp_for_date(ym: str) -> float | None:
+        """YYYY-MM 날짜에 대해 가장 가까운 분기 GDP 반환 (분기 시작월 기준 ±2개월 허용)."""
+        if ym in gdp_map:
+            return gdp_map[ym]
+        # 분기 시작월 탐색 (GDP는 분기 첫 달로 기록)
+        year, month = int(ym[:4]), int(ym[5:7])
+        for offset in range(0, 4):
+            m = month - offset
+            y = year
+            while m <= 0:
+                m += 12
+                y -= 1
+            key = f"{y:04d}-{m:02d}"
+            if key in gdp_map:
+                return gdp_map[key]
+        return None
+
+    import re as _re2
+    from datetime import datetime as _dt2
+
+    data_rows = rows[header_row_idx + 1:]
+    conn = get_db()
+    saved = 0
+    for row in data_rows:
+        try:
+            raw_date = row[date_col]
+            raw_debit = row[debit_col]
+            raw_credit = row[credit_col] if credit_col is not None else None
+
+            if raw_date is None or raw_debit is None:
+                continue
+
+            # 날짜 파싱: "Jan-2026", "2026-01", datetime 객체 등
+            if hasattr(raw_date, "strftime"):
+                ym = raw_date.strftime("%Y-%m")
+            else:
+                s = str(raw_date).strip()
+                # "Month YYYY" or "Mon-YYYY" or "YYYY-MM"
+                m2 = _re2.search(r"(\d{4})-(\d{1,2})", s)
+                if m2:
+                    ym = f"{m2.group(1)}-{int(m2.group(2)):02d}"
+                else:
+                    m3 = _re2.search(r"([A-Za-z]+)[- ](\d{4})", s)
+                    if m3:
+                        dt_p = _dt2.strptime(f"{m3.group(1)[:3]} {m3.group(2)}", "%b %Y")
+                        ym = dt_p.strftime("%Y-%m")
+                    else:
+                        continue
+
+            date_str = f"{ym}-01"
+
+            # 금액 파싱 ($백만 단위)
+            debit_mil = float(str(raw_debit).replace(",", "").replace("$", "").strip())
+            credit_mil = None
+            if raw_credit is not None:
+                try:
+                    credit_mil = float(str(raw_credit).replace(",", "").replace("$", "").strip())
+                except Exception:
+                    pass
+
+            # GDP 조인
+            gdp_b = _gdp_for_date(ym)
+            margin_gdp = round((debit_mil / 1000) / gdp_b * 100, 4) if gdp_b else None
+            net_credit = round(credit_mil / debit_mil, 4) if (credit_mil is not None and debit_mil > 0) else None
+
+            cur = conn.execute(
+                """INSERT OR IGNORE INTO leverage_margin_debt
+                   (date, margin_debt_mil, free_credit_mil, gdp_billions, margin_gdp_pct, net_credit_ratio, fetched_at)
+                   VALUES (?,?,?,?,?,?,?)""",
+                (date_str, round(debit_mil, 2), round(credit_mil, 2) if credit_mil else None,
+                 round(gdp_b, 2) if gdp_b else None, margin_gdp, net_credit, now_kst_str()),
+            )
+            saved += cur.rowcount
+        except Exception as exc:
+            log.debug(f"[Margin] 행 파싱 오류: {exc} | row={row}")
+
+    conn.commit()
+    conn.close()
+    log.info(f"[Margin] {saved}건 신규 저장")
+    return saved
+
+
+def refresh_put_call() -> int:
+    """CBOE Equity Put/Call Ratio (equitypc.csv) 수집 → DB 저장.
+
+    URL: https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv
+    CSV 형식: DATE,CALL,PUT,TOTAL,P/C Ratio (또는 유사)
+    최근 1일치만 저장 (최신 값 upsert).
+    """
+    CBOE_URL = "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv"
+    body = _http_get(CBOE_URL, timeout=30)
+    if not body:
+        log.warning("[Put/Call] CBOE CSV 다운로드 실패")
+        return 0
+
+    import re as _re3
+
+    lines = [l.strip() for l in body.splitlines() if l.strip()]
+    if len(lines) < 2:
+        log.warning("[Put/Call] CBOE CSV 행 부족")
+        return 0
+
+    header = [h.strip().strip('"').upper() for h in lines[0].split(",")]
+    date_col = next((i for i, h in enumerate(header) if "DATE" in h), None)
+    pc_col = next((i for i, h in enumerate(header) if "P/C" in h or "PUT/CALL" in h or "RATIO" in h), None)
+    if pc_col is None:
+        # fallback: 마지막 수치 열
+        pc_col = len(header) - 1
+
+    log.info(f"[Put/Call] header={header}, date_col={date_col}, pc_col={pc_col}")
+
+    if date_col is None:
+        log.warning("[Put/Call] DATE 컬럼 탐색 실패")
+        return 0
+
+    conn = get_db()
+    saved = 0
+    for line in lines[1:]:
+        parts = [p.strip().strip('"') for p in line.split(",")]
+        if len(parts) <= max(date_col, pc_col):
+            continue
+        try:
+            raw_date = parts[date_col].strip()
+            raw_pc = parts[pc_col].strip()
+            if not raw_date or not raw_pc or raw_pc in ("", ".", "NA"):
+                continue
+            # 날짜 정규화 MM/DD/YYYY → YYYY-MM-DD
+            from datetime import datetime as _dt3
+            for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"):
+                try:
+                    date_str = _dt3.strptime(raw_date, fmt).strftime("%Y-%m-%d")
+                    break
+                except ValueError:
+                    continue
+            else:
+                continue
+            pc_ratio = float(raw_pc)
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO leverage_put_call (date, put_call_ratio, fetched_at) VALUES (?,?,?)",
+                (date_str, round(pc_ratio, 4), now_kst_str()),
+            )
+            saved += cur.rowcount
+        except Exception as exc:
+            log.debug(f"[Put/Call] 행 파싱 오류: {exc} | line={line}")
+
+    conn.commit()
+    conn.close()
+    log.info(f"[Put/Call] {saved}건 신규 저장")
     return saved
 
 
@@ -4321,7 +4671,30 @@ def _startup_full_refresh() -> None:
     except Exception as exc:
         log.error(f"[Startup] TMRS 재계산 오류: {exc}")
 
-    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 3.5 포함)")
+    # 17. Stage 3.7: Leverage 지표 초기 로드 (Margin Debt / Put-Call)
+    try:
+        conn = get_db()
+        mg_count = conn.execute("SELECT COUNT(*) FROM leverage_margin_debt").fetchone()[0]
+        pc_count = conn.execute("SELECT COUNT(*) FROM leverage_put_call").fetchone()[0]
+        conn.close()
+        if mg_count == 0:
+            log.info("[Startup] Margin Debt DB 비어있음 — FINRA 초기 로드 시작")
+        refresh_margin_debt()
+        if pc_count == 0:
+            log.info("[Startup] Put/Call DB 비어있음 — CBOE 초기 로드 시작")
+        refresh_put_call()
+    except Exception as exc:
+        log.error(f"[Startup] Leverage 초기 로드 오류: {exc}")
+
+    # 18. Leverage 수집 완료 후 TMRS 재계산 (snapshot에 Margin/PC 반영)
+    try:
+        log.info("[Startup] Leverage 수집 완료 → TMRS 재계산 시작")
+        _compute_tmrs(trigger="startup_leverage")
+        log.info("[Startup] TMRS 재계산 완료 (Leverage 포함)")
+    except Exception as exc:
+        log.error(f"[Startup] TMRS 재계산 오류: {exc}")
+
+    log.info("[Startup] 전체 초기 수집 및 알람 체크 완료 (Stage 3.7 포함)")
 
 
 def _startup() -> None:
