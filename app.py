@@ -2599,8 +2599,15 @@ def refresh_margin_debt() -> int:
     try:
         import openpyxl as _openpyxl
     except ImportError:
-        log.error("[Margin] openpyxl 미설치 — pip install openpyxl 필요")
-        return 0
+        log.warning("[Margin] openpyxl 미설치 — 자동 설치 시도 중...")
+        try:
+            import subprocess as _sp
+            _sp.check_call(["pip", "install", "openpyxl", "--quiet"])
+            import openpyxl as _openpyxl
+            log.info("[Margin] openpyxl 설치 완료")
+        except Exception as _pip_exc:
+            log.error(f"[Margin] openpyxl 자동 설치 실패: {_pip_exc}")
+            return 0
 
     FINRA_PAGE = "https://www.finra.org/investors/learn-to-invest/advanced-investing/margin-statistics"
 
@@ -2783,29 +2790,35 @@ def refresh_put_call() -> int:
         log.warning("[Put/Call] CBOE CSV 다운로드 실패")
         return 0
 
-    import re as _re3
-
     lines = [l.strip() for l in body.splitlines() if l.strip()]
     if len(lines) < 2:
         log.warning("[Put/Call] CBOE CSV 행 부족")
         return 0
 
-    header = [h.strip().strip('"').upper() for h in lines[0].split(",")]
+    # CBOE CSV 첫 N줄이 면책 문구 — 실제 헤더 행(DATE 컬럼 포함) 탐색
+    header_row_idx = None
+    header = []
+    for i, line in enumerate(lines):
+        cols = [h.strip().strip('"').upper() for h in line.split(",")]
+        if any("DATE" in c for c in cols):
+            header_row_idx = i
+            header = cols
+            break
+
+    if header_row_idx is None:
+        log.warning("[Put/Call] 헤더 행(DATE) 탐색 실패 — CSV 구조 변경 가능성")
+        return 0
+
     date_col = next((i for i, h in enumerate(header) if "DATE" in h), None)
     pc_col = next((i for i, h in enumerate(header) if "P/C" in h or "PUT/CALL" in h or "RATIO" in h), None)
     if pc_col is None:
-        # fallback: 마지막 수치 열
         pc_col = len(header) - 1
 
     log.info(f"[Put/Call] header={header}, date_col={date_col}, pc_col={pc_col}")
 
-    if date_col is None:
-        log.warning("[Put/Call] DATE 컬럼 탐색 실패")
-        return 0
-
     conn = get_db()
     saved = 0
-    for line in lines[1:]:
+    for line in lines[header_row_idx + 1:]:
         parts = [p.strip().strip('"') for p in line.split(",")]
         if len(parts) <= max(date_col, pc_col):
             continue
