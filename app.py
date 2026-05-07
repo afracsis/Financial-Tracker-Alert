@@ -693,7 +693,7 @@ INDICATOR_INTERPRETATIONS: dict[str, str] = {
     # Stage 3.7 Leverage / Speculation
     "margin_gdp":       "Margin Debt / GDP. 경제 규모 대비 투자자 레버리지. 역대 최고 4.07% (2026.1). 닷컴 2.6%, 금융위기 2.5%.",
     "net_credit_ratio": "Net Credit Ratio = Free Credit / Margin Debt. 낮을수록 투자자 현금 소진 → 강제 청산 취약성 증대.",
-    "put_call":         "CBOE Equity Put/Call Ratio. 낮을수록 콜 과다 = 투기 과열. < 0.40 는 역대 극단 과열 구간.",
+    "put_call":         "[보류 중 · cap=0] CBOE Equity Put/Call Ratio. CBOE CDN Cloudflare 차단으로 현재 데이터 수집 불가. Nasdaq Data Link API key 등록 후 활성화 예정.",
 }
 
 # ── 지표별 임계값 설명 (단계별 텍스트, 상세 카드 표시용) ─────────
@@ -732,7 +732,7 @@ INDICATOR_THRESHOLDS: dict[str, list] = {
 LAYER_SPEC: dict = {
     1:           {"spec_indicators": 12, "spec_max_score": 45},
     2:           {"spec_indicators":  8, "spec_max_score": 30},  # CP-EFFR 포함 8개, Korea CDS 미구현
-    3:           {"spec_indicators": 13, "spec_max_score": 28},  # Stage 3.7: +3 Leverage (10→13, 22→28)
+    3:           {"spec_indicators": 13, "spec_max_score": 26},  # Stage 3.7: 13개, put_call cap=0 → 26pt (28-2)
     "divergence":{"spec_indicators":  5, "spec_max_score": 10},
 }
 
@@ -1261,7 +1261,7 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
     if _pc_row:
         v = _pc_row["put_call_ratio"]
         inds["put_call"] = dict(
-            name="Put/Call Ratio", layer=3, cap=2, value=round(v, 3), unit="",
+            name="Put/Call Ratio", layer=3, cap=0, value=round(v, 3), unit="",
             tier=_tier(-v, [(-0.60, "normal"), (-0.50, "watch"), (-0.40, "stress"), (None, "crisis")]),
         )
 
@@ -1275,12 +1275,12 @@ def _compute_tmrs(trigger: str = "manual") -> dict:
 
     l1 = min(round(l1, 2), 45.0)
     l2 = min(round(l2, 2), 30.0)
-    l3 = min(round(l3, 2), 28.0)  # Stage 3.7: 22 → 28
+    l3 = min(round(l3, 2), 26.0)  # Stage 3.7: put_call cap=0 → 26pt (28-2)
 
     # ── Cross-Layer Divergence — 10pt 상한 ───────────────────────
     l1_sev = l1 / 45
     l2_sev = l2 / 30
-    l3_sev = l3 / 28 if l3 > 0 else 0.0  # Stage 3.7: /22 → /28
+    l3_sev = l3 / 26 if l3 > 0 else 0.0  # Stage 3.7: put_call cap=0 → /26 (28-2)
     div = round(min(max(((l1_sev + l2_sev) / 2 - l3_sev) * 10, 0), 10), 2)
     total = round(l1 + l2 + l3 + div, 1)
 
