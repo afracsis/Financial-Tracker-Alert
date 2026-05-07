@@ -2613,17 +2613,33 @@ def refresh_margin_debt() -> int:
 
     xlsx_bytes: bytes | None = None
 
-    # 전략 A: HTML 파싱으로 링크 탐색
+    # 전략 A: HTML 파싱으로 링크 탐색 (날짜 기준 최신 링크 선택)
     page_html = _http_get(FINRA_PAGE, timeout=30)
     if page_html:
         import re as _re
-        links = _re.findall(r'href="([^"]*margin-statistics\.xlsx[^"]*)"', page_html, _re.I)
-        if not links:
-            links = _re.findall(r'(https://www\.finra\.org/sites/default/files/\d{4}-\d{2}/margin-statistics\.xlsx)', page_html, _re.I)
-        if links:
-            xlsx_url = links[0] if links[0].startswith("http") else f"https://www.finra.org{links[0]}"
-            log.info(f"[Margin] 전략 A: Excel URL 발견 → {xlsx_url}")
+        # href 내 상대/절대 경로 모두 수집
+        raw_links = _re.findall(r'href="([^"]*margin-statistics\.xlsx[^"]*)"', page_html, _re.I)
+        # 절대 URL 패턴도 추가 탐색
+        raw_links += _re.findall(
+            r'(https://www\.finra\.org/sites/default/files/\d{4}-\d{2}/margin-statistics\.xlsx)',
+            page_html, _re.I
+        )
+        # 절대 URL 정규화 + 날짜 파싱 → 최신순 정렬
+        dated_links: list[tuple[str, str]] = []  # (YYYY-MM, url)
+        for lnk in raw_links:
+            url_full = lnk if lnk.startswith("http") else f"https://www.finra.org{lnk}"
+            m = _re.search(r"/(\d{4}-\d{2})/margin-statistics\.xlsx", url_full)
+            if m:
+                dated_links.append((m.group(1), url_full))
+        dated_links.sort(key=lambda x: x[0], reverse=True)  # 최신 날짜 우선
+        log.info(f"[Margin] 전략 A: xlsx 링크 {len(dated_links)}개 발견: {[d for d,_ in dated_links[:4]]}")
+        for _date_label, xlsx_url in dated_links:
+            log.info(f"[Margin] 전략 A: {_date_label} Excel 시도 → {xlsx_url}")
             xlsx_bytes = _http_get_bytes(xlsx_url, timeout=60)
+            if xlsx_bytes and len(xlsx_bytes) > 5000:
+                log.info(f"[Margin] 전략 A 성공: {_date_label}")
+                break
+            xlsx_bytes = None
 
     # 전략 B: 순차 월 fallback (최근 6개월)
     if not xlsx_bytes:
@@ -2655,67 +2671,80 @@ def refresh_margin_debt() -> int:
         ws = wb.active
         rows = list(ws.iter_rows(values_only=True))
         wb.close()
+        log.info(f"[Margin] Excel 로드 완료: {len(rows)}행, 열 수={len(rows[0]) if rows else 0}")
     except Exception as exc:
         log.error(f"[Margin] Excel 파싱 오류: {exc}")
         return 0
 
-    # 헤더 탐색: Month/Year, Debit Balances (Margin), Free Credit
+    # 첫 5행 덤프 (구조 파악용)
+    for _di, _dr in enumerate(rows[:5]):
+        log.info(f"[Margin] Excel row[{_di}]: {[str(c)[:30] if c is not None else None for c in _dr]}")
+
+    # 헤더 탐색: Month/Year, Debit Balances (Margin), Free Credit (최대 15행 탐색)
     header_row_idx = None
     header = []
-    for i, row in enumerate(rows[:10]):
+    for i, row in enumerate(rows[:15]):
         cells = [str(c).strip().upper() if c is not None else "" for c in row]
-        if any("DEBIT" in c or "MARGIN" in c or "MONTH" in c for c in cells):
+        if any("DEBIT" in c or "MARGIN" in c or "MONTH" in c or "PERIOD" in c for c in cells):
             header_row_idx = i
             header = cells
+            log.info(f"[Margin] 헤더 행 발견 row[{i}]: {cells}")
             break
 
     if header_row_idx is None:
         log.warning("[Margin] 헤더 행 탐색 실패")
         return 0
 
-    # 열 인덱스
-    date_col = next((i for i, h in enumerate(header) if "MONTH" in h or "YEAR" in h or "DATE" in h or "PERIOD" in h), None)
-    debit_col = next((i for i, h in enumerate(header) if "DEBIT" in h and ("MARGIN" in h or "CUSTOMER" in h)), None)
-    if debit_col is None:
-        debit_col = next((i for i, h in enumerate(header) if "DEBIT" in h), None)
-    credit_col = next((i for i, h in enumerate(header) if "FREE" in h and "CREDIT" in h), None)
-    if credit_col is None:
-        credit_col = next((i for i, h in enumerate(header) if "CREDIT" in h and "FREE" in h), None)
+    # 열 인덱스 탐색 — 헤더가 멀티행일 경우 다음 행과 결합해 재탐색
+    def _find_col(cells: list[str], *keywords_groups: tuple[str, ...]) -> int | None:
+        for kws in keywords_groups:
+            idx = next((i for i, c in enumerate(cells) if all(k in c for k in kws)), None)
+            if idx is not None:
+                return idx
+        return None
 
-    log.info(f"[Margin] header={header[:8]}, date_col={date_col}, debit_col={debit_col}, credit_col={credit_col}")
+    # 첫 번째 헤더 행 시도
+    combined_header = header[:]
+    # 멀티행 헤더: 다음 행도 병합 (빈 셀이면 위 행 값 이어받기)
+    if header_row_idx + 1 < len(rows):
+        next_row = [str(c).strip().upper() if c is not None else "" for c in rows[header_row_idx + 1]]
+        combined_header = [
+            (h if h else next_row[i]) if i < len(next_row) else h
+            for i, h in enumerate(combined_header)
+        ]
+
+    date_col = _find_col(combined_header,
+        ("MONTH",), ("YEAR",), ("DATE",), ("PERIOD",))
+    debit_col = _find_col(combined_header,
+        ("DEBIT", "MARGIN"), ("DEBIT", "CUSTOMER"), ("DEBIT",))
+    credit_col = _find_col(combined_header,
+        ("FREE", "CREDIT"), ("CREDIT", "FREE"), ("FREE CREDIT",))
+
+    log.info(f"[Margin] combined_header={combined_header[:8]}")
+    log.info(f"[Margin] 컬럼 인덱스 → date={date_col}, debit={debit_col}, credit={credit_col}")
 
     if date_col is None or debit_col is None:
-        log.warning("[Margin] 필수 컬럼 탐색 실패")
+        log.warning(f"[Margin] 필수 컬럼 탐색 실패 (전체 헤더: {combined_header})")
         return 0
 
-    # GDP 데이터 로드 (FRED GDP, 분기별, $billion)
-    gdp_rows = fetch_fred_observations("GDP", limit=40)
-    gdp_map: dict[str, float] = {}
-    for gdate, gval in gdp_rows:
-        # YYYY-Q 형식이 아닌 YYYY-MM-DD 형식
-        gdp_map[gdate[:7]] = gval  # YYYY-MM → GDP
-
-    def _gdp_for_date(ym: str) -> float | None:
-        """YYYY-MM 날짜에 대해 가장 가까운 분기 GDP 반환 (분기 시작월 기준 ±2개월 허용)."""
-        if ym in gdp_map:
-            return gdp_map[ym]
-        # 분기 시작월 탐색 (GDP는 분기 첫 달로 기록)
-        year, month = int(ym[:4]), int(ym[5:7])
-        for offset in range(0, 4):
-            m = month - offset
-            y = year
-            while m <= 0:
-                m += 12
-                y -= 1
-            key = f"{y:04d}-{m:02d}"
-            if key in gdp_map:
-                return gdp_map[key]
-        return None
+    # GDP 데이터 로드: _fetch_gdp_history() 재사용 (FRED GDP 분기별, $billion)
+    gdp_map = _fetch_gdp_history()
+    log.info(f"[Margin] GDP 이력 {len(gdp_map)}건 로드 (분기별)")
 
     import re as _re2
     from datetime import datetime as _dt2
 
-    data_rows = rows[header_row_idx + 1:]
+    # 데이터 시작: 헤더 행 + 1 (멀티행 헤더면 +2)
+    data_start = header_row_idx + 1
+    if header_row_idx + 1 < len(rows):
+        # 첫 데이터 행이 숫자 없고 텍스트면 서브헤더 → 건너뜀
+        _candidate = rows[data_start]
+        _cand_cells = [str(c).strip() if c is not None else "" for c in _candidate]
+        if _cand_cells[date_col] and not any(ch.isdigit() for ch in _cand_cells[date_col]):
+            data_start += 1
+            log.info(f"[Margin] 서브헤더 행 건너뜀 (row[{header_row_idx+1}])")
+    data_rows = rows[data_start:]
+    log.info(f"[Margin] 데이터 행 {len(data_rows)}개 (시작 row[{data_start}])")
     conn = get_db()
     saved = 0
     for row in data_rows:
@@ -2755,8 +2784,8 @@ def refresh_margin_debt() -> int:
                 except Exception:
                     pass
 
-            # GDP 조인
-            gdp_b = _gdp_for_date(ym)
+            # GDP 조인: 모듈 레벨 _gdp_for_date(date_str, gdp_map) 사용
+            gdp_b = _gdp_for_date(date_str, gdp_map)
             margin_gdp = round((debit_mil / 1000) / gdp_b * 100, 4) if gdp_b else None
             net_credit = round(credit_mil / debit_mil, 4) if (credit_mil is not None and debit_mil > 0) else None
 
@@ -2777,58 +2806,47 @@ def refresh_margin_debt() -> int:
     return saved
 
 
-def refresh_put_call() -> int:
-    """CBOE Equity Put/Call Ratio (equitypc.csv) 수집 → DB 저장.
-
-    URL: https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv
-    CSV 형식: DATE,CALL,PUT,TOTAL,P/C Ratio (또는 유사)
-    최근 1일치만 저장 (최신 값 upsert).
-    """
-    CBOE_URL = "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv"
-    body = _http_get(CBOE_URL, timeout=30)
-    if not body:
-        log.warning("[Put/Call] CBOE CSV 다운로드 실패")
-        return 0
+def _parse_cboe_pc_csv(body: str, source_label: str) -> list[tuple[str, float]]:
+    """CBOE Put/Call CSV 본문 파싱. [(YYYY-MM-DD, ratio), ...] 반환."""
+    from datetime import datetime as _dt3
 
     lines = [l.strip() for l in body.splitlines() if l.strip()]
     if len(lines) < 2:
-        log.warning("[Put/Call] CBOE CSV 행 부족")
-        return 0
+        log.warning(f"[Put/Call] {source_label} CSV 행 부족")
+        return []
 
-    # CBOE CSV 첫 N줄이 면책 문구 — 실제 헤더 행(DATE 컬럼 포함) 탐색
+    # 면책 문구 건너뛰기 — DATE 컬럼 포함 행을 헤더로 탐색
     header_row_idx = None
-    header = []
+    header: list[str] = []
     for i, line in enumerate(lines):
         cols = [h.strip().strip('"').upper() for h in line.split(",")]
-        if any("DATE" in c for c in cols):
+        if any(c == "DATE" or c.startswith("DATE") for c in cols):
             header_row_idx = i
             header = cols
             break
 
     if header_row_idx is None:
-        log.warning("[Put/Call] 헤더 행(DATE) 탐색 실패 — CSV 구조 변경 가능성")
-        return 0
+        log.warning(f"[Put/Call] {source_label} 헤더 행(DATE) 탐색 실패")
+        return []
 
-    date_col = next((i for i, h in enumerate(header) if "DATE" in h), None)
+    date_col = next((i for i, h in enumerate(header) if h == "DATE" or h.startswith("DATE")), None)
     pc_col = next((i for i, h in enumerate(header) if "P/C" in h or "PUT/CALL" in h or "RATIO" in h), None)
     if pc_col is None:
         pc_col = len(header) - 1
 
-    log.info(f"[Put/Call] header={header}, date_col={date_col}, pc_col={pc_col}")
+    log.info(f"[Put/Call] {source_label} header={header}, date_col={date_col}, pc_col={pc_col}")
 
-    conn = get_db()
-    saved = 0
-    for line in lines[header_row_idx + 1:]:
+    results: list[tuple[str, float]] = []
+    data_lines = lines[header_row_idx + 1:]
+    for line in data_lines:
         parts = [p.strip().strip('"') for p in line.split(",")]
         if len(parts) <= max(date_col, pc_col):
             continue
         try:
             raw_date = parts[date_col].strip()
             raw_pc = parts[pc_col].strip()
-            if not raw_date or not raw_pc or raw_pc in ("", ".", "NA"):
+            if not raw_date or not raw_pc or raw_pc in ("", ".", "NA", "N/A"):
                 continue
-            # 날짜 정규화 MM/DD/YYYY → YYYY-MM-DD
-            from datetime import datetime as _dt3
             for fmt in ("%m/%d/%Y", "%Y-%m-%d", "%m-%d-%Y"):
                 try:
                     date_str = _dt3.strptime(raw_date, fmt).strftime("%Y-%m-%d")
@@ -2837,14 +2855,54 @@ def refresh_put_call() -> int:
                     continue
             else:
                 continue
-            pc_ratio = float(raw_pc)
+            results.append((date_str, round(float(raw_pc), 4)))
+        except Exception as exc:
+            log.debug(f"[Put/Call] {source_label} 행 파싱 오류: {exc} | {line}")
+
+    if results:
+        dates = [r[0] for r in results]
+        log.info(f"[Put/Call] {source_label}: {len(results)}행, 날짜 범위 {min(dates)} ~ {max(dates)}")
+    return results
+
+
+def refresh_put_call() -> int:
+    """CBOE Equity Put/Call Ratio 수집 → DB 저장.
+
+    소스 1 (현재): https://cdn.cboe.com/api/global/us_indices/daily_prices/EQUITY_PC_RATIOS.csv
+    소스 2 (이력): https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv
+    두 소스 모두 파싱하여 합산 저장.
+    """
+    CBOE_SOURCES = [
+        # 현재 데이터 (2020+)
+        ("current", "https://cdn.cboe.com/api/global/us_indices/daily_prices/EQUITY_PC_RATIOS.csv"),
+        # 이력 데이터 (2006~2019)
+        ("history", "https://cdn.cboe.com/resources/options/volume_and_call_put_ratios/equitypc.csv"),
+    ]
+
+    all_records: list[tuple[str, float]] = []
+    for label, url in CBOE_SOURCES:
+        body = _http_get(url, timeout=30)
+        if not body:
+            log.warning(f"[Put/Call] {label} CSV 다운로드 실패: {url}")
+            continue
+        records = _parse_cboe_pc_csv(body, label)
+        all_records.extend(records)
+
+    if not all_records:
+        log.warning("[Put/Call] 모든 소스 실패 — 데이터 없음")
+        return 0
+
+    conn = get_db()
+    saved = 0
+    for date_str, pc_ratio in all_records:
+        try:
             cur = conn.execute(
                 "INSERT OR IGNORE INTO leverage_put_call (date, put_call_ratio, fetched_at) VALUES (?,?,?)",
-                (date_str, round(pc_ratio, 4), now_kst_str()),
+                (date_str, pc_ratio, now_kst_str()),
             )
             saved += cur.rowcount
         except Exception as exc:
-            log.debug(f"[Put/Call] 행 파싱 오류: {exc} | line={line}")
+            log.debug(f"[Put/Call] DB 저장 오류: {exc} | {date_str}")
 
     conn.commit()
     conn.close()
