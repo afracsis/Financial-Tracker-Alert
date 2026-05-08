@@ -5,7 +5,7 @@ Gunicorn 운영 설정 — Financial Market Tracker v1.0
 import os
 
 # ── 서버 바인딩 ─────────────────────────────────────────────────
-bind    = f"0.0.0.0:{os.environ.get('PORT', '18955')}"
+bind    = f"0.0.0.0:{os.environ.get('PORT', '5000')}"
 backlog = 64
 
 # ── 워커 설정 ───────────────────────────────────────────────────
