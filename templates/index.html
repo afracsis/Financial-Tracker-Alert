@@ -1184,6 +1184,17 @@
             <div class="nyfed-value loading" id="fedop-tga-val">—</div>
             <div class="nyfed-sub" id="fedop-tga-sub">로딩 중...</div>
         </div>
+        <!-- Reserve Balances — 지급준비금, 초록색 -->
+        <div class="nyfed-card">
+            <div class="nyfed-card-accent" style="background:#68d391;"></div>
+            <div class="nyfed-label" style="display:flex;align-items:center;gap:6px;">
+                Reserve Balances
+                <span style="font-size:10px;background:rgba(104,211,145,0.15);color:#68d391;
+                             border:1px solid rgba(104,211,145,0.3);padding:1px 6px;border-radius:10px;">지급준비금</span>
+            </div>
+            <div class="nyfed-value loading" id="fedop-res-val">—</div>
+            <div class="nyfed-sub" id="fedop-res-sub">로딩 중...</div>
+        </div>
     </div>
 
     <!-- ── 차트 2개 (좌우 배치) ──────────────────────────────────── -->
@@ -2924,6 +2935,40 @@ async function loadFedOp() {
                 tgaEl.textContent = '수집 중';
                 tgaEl.classList.remove('loading');
                 if (tgaSub) tgaSub.textContent = 'FRED WTREGEN 수집 후 표시됩니다 (주간 갱신)';
+            }
+        }
+
+        // ── Reserve Balances 카드 ─────────────────────────────────
+        const res    = d.reserve_balances;
+        const resEl  = document.getElementById('fedop-res-val');
+        const resSub = document.getElementById('fedop-res-sub');
+        if (resEl) {
+            if (res && res.value_mil != null) {
+                const bil     = res.value_mil / 1_000_000;  // 백만$ → 조$
+                const bilDisp = bil >= 1 ? bil.toFixed(2) + '조$' : (res.value_mil / 1000).toFixed(0) + 'B$';
+                resEl.innerHTML = `<span style="color:#68d391;font-size:28px;font-weight:700;">${bilDisp}</span>`;
+                resEl.classList.remove('loading');
+                if (res.change_mil != null) {
+                    const chgB = res.change_mil / 1000;
+                    const sign = chgB >= 0 ? '+' : '';
+                    let chgCol, chgTxt;
+                    if (chgB > 30) {
+                        chgCol = '#68d391'; chgTxt = ' ✓ 유동성 확충';
+                    } else if (chgB < -75) {
+                        chgCol = '#fc8181'; chgTxt = ' ⚠️ 유동성 급감 — 자금시장 주의';
+                    } else if (chgB < -30) {
+                        chgCol = '#f6ad55'; chgTxt = ' ⚠️ 유동성 감소';
+                    } else {
+                        chgCol = '#a0aec0'; chgTxt = ' — 안정';
+                    }
+                    resSub.innerHTML = `주간변화: <span style="color:${chgCol};font-weight:600;">${sign}${chgB.toFixed(0)}B$</span>${chgTxt} · H.4.1 기준일: ${res.date}`;
+                } else {
+                    resSub.textContent = `H.4.1 기준일: ${res.date}`;
+                }
+            } else {
+                resEl.textContent = '수집 중';
+                resEl.classList.remove('loading');
+                if (resSub) resSub.textContent = 'FRED WRESBAL 수집 후 표시됩니다 (주간 갱신)';
             }
         }
 

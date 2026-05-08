@@ -293,6 +293,17 @@ def init_db():
         )
     """)
 
+    # ── Reserve Balances (FRED WRESBAL, $백만) ───────────────────
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS reserve_balances (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            date       TEXT    NOT NULL UNIQUE,
+            value      REAL,
+            fetched_at TEXT    NOT NULL
+        )
+    """)
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_resbal_date ON reserve_balances(date)")
+
     # ── SOFR 90일 평균 (FRED SOFR90DAYAVG, %) ────────────────────
     conn.execute("""
         CREATE TABLE IF NOT EXISTS sofr_90d (
@@ -1545,17 +1556,18 @@ def start_scheduler() -> BackgroundScheduler:
     )
     log.info("[SOFR 90d] 스케줄 등록: 매일 7,22시 5분 KST")
 
-    # Discount Window + TGA: 매주 금요일 07:30 KST (H.4.1 목요일 발표 다음날)
+    # Discount Window + TGA + Reserve Balances: 매주 금요일 07:30 KST (H.4.1 목요일 발표 다음날)
     def _refresh_h41():
         refresh_discount_window()
         refresh_tga()
+        refresh_reserve_balances()
 
     scheduler.add_job(
         _refresh_h41,
         trigger=CronTrigger(day_of_week="fri", hour="7", minute="30", timezone="Asia/Seoul"),
         id="refresh_h41_weekly",
     )
-    log.info("[H4.1] 스케줄 등록: 매주 금요일 7시 30분 KST (Discount Window + TGA)")
+    log.info("[H4.1] 스케줄 등록: 매주 금요일 7시 30분 KST (Discount Window + TGA + Reserve Balances)")
 
     # Stage 1: Single-B OAS + IG OAS (FRED, 매일 07:15 / 22:15 KST)
     scheduler.add_job(
@@ -2934,6 +2946,17 @@ def refresh_tga() -> int:
     return 0
 
 
+def refresh_reserve_balances() -> int:
+    """FRED WRESBAL (지급준비금 잔액, $백만) 수집 → DB 저장."""
+    rows = fetch_fred_observations("WRESBAL", limit=60)
+    if rows:
+        count = upsert_observations("reserve_balances", rows)
+        log.info(f"[Reserve] {count}건 신규 저장")
+        return count
+    log.warning("[Reserve] FRED 응답 없음")
+    return 0
+
+
 def refresh_sofr_90d() -> int:
     """FRED SOFR90DAYAVG (SOFR 90일 평균, %) 수집 → DB 저장."""
     rows = fetch_fred_observations("SOFR90DAYAVG", limit=60)
@@ -3971,6 +3994,24 @@ def get_fedop():
             "change_mil": tga_chg,
         }
 
+    # ── Reserve Balances (FRED WRESBAL) ─────────────────────────
+    res_rows = conn.execute(
+        "SELECT date, value FROM reserve_balances ORDER BY date DESC LIMIT 2"
+    ).fetchall()
+    reserve_data = None
+    if res_rows:
+        res_latest = dict(res_rows[0])
+        res_prev   = dict(res_rows[1]) if len(res_rows) > 1 else None
+        res_chg    = None
+        if res_prev and res_latest["value"] is not None and res_prev["value"] is not None:
+            res_chg = round(res_latest["value"] - res_prev["value"], 0)
+        reserve_data = {
+            "date":       res_latest["date"],
+            "value_mil":  res_latest["value"],
+            "prev_date":  res_prev["date"]  if res_prev else None,
+            "change_mil": res_chg,
+        }
+
     conn.close()
     return jsonify({
         "soma": {
@@ -3986,6 +4027,7 @@ def get_fedop():
         "rp":               rp_data,
         "discount_window":  dw_data,
         "tga":              tga_data,
+        "reserve_balances": reserve_data,
     })
 
 
@@ -4682,6 +4724,20 @@ def _startup_full_refresh() -> None:
             refresh_tga()
     except Exception as exc:
         log.error(f"[Startup] TGA 갱신 오류: {exc}")
+
+    # 9b. Reserve Balances 초기 로드 (FRED WRESBAL, H.4.1 주간)
+    try:
+        conn = get_db()
+        res_count = conn.execute("SELECT COUNT(*) FROM reserve_balances").fetchone()[0]
+        conn.close()
+        if res_count == 0:
+            log.info("[Reserve] DB 비어있음 — 최근 1년 이력 로드 중...")
+            upsert_observations("reserve_balances",
+                fetch_fred_observations("WRESBAL", limit=60) or [])
+        else:
+            refresh_reserve_balances()
+    except Exception as exc:
+        log.error(f"[Startup] Reserve Balances 갱신 오류: {exc}")
 
     # 10. Single-B OAS 초기 로드 (Stage 1)
     try:
